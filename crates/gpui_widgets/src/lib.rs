@@ -20,6 +20,7 @@
 pub mod checkbox;
 pub mod color;
 pub mod combo_box;
+pub mod curve_editor;
 pub mod keyable;
 pub mod radio_group;
 pub mod slider;
