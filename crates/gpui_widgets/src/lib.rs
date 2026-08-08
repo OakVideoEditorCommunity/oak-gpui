@@ -18,6 +18,7 @@
 //!   covered by plain unit tests.
 
 pub mod checkbox;
+pub mod color;
 pub mod combo_box;
 pub mod keyable;
 pub mod radio_group;
