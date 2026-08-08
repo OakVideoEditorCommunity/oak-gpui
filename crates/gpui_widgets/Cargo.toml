@@ -38,3 +38,7 @@ path = "examples/viewer.rs"
 [[example]]
 name = "project_explorer"
 path = "examples/project_explorer.rs"
+
+[[example]]
+name = "scopes"
+path = "examples/scopes.rs"

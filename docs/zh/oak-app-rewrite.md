@@ -114,9 +114,15 @@
 
 ## W6. 示波器与音频表
 
-- [ ] `Histogram` / `Vectorscope` / `Waveform` 检视组件（canvas
+- [x] `Histogram` / `Vectorscope` / `Waveform` 检视组件（canvas
   绘制，数据来自 oak render C ABI 的帧采样）。
-- [ ] `AudioLevelMeter` 表头（数据来自 oak audio C ABI）。
+  > `gpui_widgets::scopes`：纯数学（直方图分箱、波形 min/max 包络、
+  > vectorscope 色度投影）单测覆盖；`LumaDataSource`/`ChromaDataSource`
+  > trait 由 host 经 C ABI 提供帧采样。
+- [x] `AudioLevelMeter` 表头（数据来自 oak audio C ABI）。
+  > `gpui_widgets::audio_meter`：分段点亮 + 峰值保持衰减（纯数学
+  > 单测）；`AudioMeterDataSource` trait。
+  > `examples/scopes.rs`：mock 信号源驱动四个组件。
 
 ## W7. 主题系统
 
