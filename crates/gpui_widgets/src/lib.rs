@@ -17,6 +17,9 @@
 //!   files with no gpui coupling (e.g. [`value`], [`slider::model`]) and is
 //!   covered by plain unit tests.
 
+pub mod checkbox;
 pub mod keyable;
+pub mod radio_group;
 pub mod slider;
+pub mod spinbox;
 pub mod value;
