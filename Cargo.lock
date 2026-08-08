@@ -2762,6 +2762,7 @@ name = "gpui_widgets"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "core-video",
  "gpui",
  "gpui_elements",
  "gpui_platform",

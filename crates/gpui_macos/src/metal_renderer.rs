@@ -1840,13 +1840,14 @@ impl MetalRenderer {
                 DevicePixels::from(surface.image_buffer.get_height() as i32),
             );
 
-            let is_bgra = match surface.image_buffer.get_pixel_format() {
-                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange => false,
-                kCVPixelFormatType_32BGRA => true,
-                other => {
-                    log::error!("unsupported surface pixel format: {other}");
-                    return false;
-                }
+            let pixel_format = surface.image_buffer.get_pixel_format();
+            let is_bgra = if pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange {
+                false
+            } else if pixel_format == kCVPixelFormatType_32BGRA {
+                true
+            } else {
+                log::error!("unsupported surface pixel format: {pixel_format}");
+                return false;
             };
 
             // Y (or the whole BGRA image) texture from plane 0.
