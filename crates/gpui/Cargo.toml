@@ -214,6 +214,22 @@ path = "examples/learn/blur.rs"
 name = "keyring"
 path = "examples/learn/keyring.rs"
 
+[[example]]
+name = "dock_layout"
+path = "examples/learn/dock_layout.rs"
+
+[[example]]
+name = "timeline"
+path = "examples/learn/timeline.rs"
+
+[[example]]
+name = "node_graph"
+path = "examples/learn/node_graph.rs"
+
+[[example]]
+name = "effect_stack"
+path = "examples/learn/effect_stack.rs"
+
 # ============================================================================
 # Bench Examples - Performance benchmarks
 # ============================================================================

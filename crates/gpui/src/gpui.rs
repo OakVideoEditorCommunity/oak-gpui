@@ -18,6 +18,10 @@ mod bounds_tree;
 mod color;
 /// The default colors used by GPUI.
 pub mod colors;
+/// Dockable panel layout system (tabs, splits, drag-to-dock).
+pub mod dock;
+/// Linear effect-stack inspector widget (companion to [`node_graph`]).
+pub mod effect_stack;
 mod element;
 mod elements;
 mod executor;
@@ -31,6 +35,8 @@ mod interactive;
 mod key_dispatch;
 mod keymap;
 mod lerp;
+/// Node-graph editor widget (nodes, ports, wires, pan/zoom canvas).
+pub mod node_graph;
 mod path_builder;
 mod platform;
 pub mod prelude;
@@ -50,6 +56,8 @@ mod taffy;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
 mod text_system;
+/// Video-editing timeline widget (tracks, clips, ruler, playhead).
+pub mod timeline;
 mod transition;
 mod util;
 mod view;
