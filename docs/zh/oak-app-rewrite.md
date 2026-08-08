@@ -126,8 +126,14 @@
 
 ## W7. 主题系统
 
-- [ ] 设计系统：把 oak 的 olive-dark/olive-light QSS 翻译成 gpui
+- [x] 设计系统：把 oak 的 olive-dark/olive-light QSS 翻译成 gpui
   的 `Colors`/样式结构，支持运行期切换。
+  > `gpui_widgets::theme`：`OakTheme::olive_dark()/olive_light()`
+  > 从 `oak/app/ui/style/olive-*/palette.ini` 提取（window/base/
+  > accent/link/disabled 等 + 派生 border）；`apply_theme` 同时设置
+  > gpui 的 `GlobalColors`（所有读 `cx.default_colors()` 的控件立即
+  > 换肤）与扩展的 `ThemeGlobal`。调色板对比度/映射单测 +
+  > `#[gpui::test]` 运行期切换验证。`examples/themes.rs`。
 
 ## 顺序与验收
 

@@ -30,5 +30,6 @@ pub mod radio_group;
 pub mod scopes;
 pub mod slider;
 pub mod spinbox;
+pub mod theme;
 pub mod value;
 pub mod viewer;
