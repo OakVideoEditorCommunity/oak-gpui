@@ -24,6 +24,7 @@ pub mod curve_editor;
 pub mod dialog;
 pub mod keyable;
 pub mod menu;
+pub mod project_explorer;
 pub mod radio_group;
 pub mod slider;
 pub mod spinbox;

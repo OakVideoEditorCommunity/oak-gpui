@@ -34,3 +34,7 @@ path = "examples/menus_dialogs.rs"
 [[example]]
 name = "viewer"
 path = "examples/viewer.rs"
+
+[[example]]
+name = "project_explorer"
+path = "examples/project_explorer.rs"

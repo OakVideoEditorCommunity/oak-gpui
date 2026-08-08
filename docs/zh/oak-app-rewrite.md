@@ -97,12 +97,20 @@
 
 ## W5. 时间线工具模式层
 
-- [ ] 在 oak 侧（不在本仓库）实现 14 个工具模式（ripple/roll/slip/
+- [x] 在 oak 侧（不在本仓库）实现 14 个工具模式（ripple/roll/slip/
   slide/razor/ 等）为 `gpui::timeline` 的 `TimelineEvent` 消费者 +
   引擎命令映射。**本仓库侧配套**：`TimelineEvent` 覆盖不全的手势
   （如 transition 拖拽、轨道选择）按需补事件。
-- [ ] 素材箱（ProjectExplorer）：树 + 图标双视图，文件拖入经
+  > 本仓库侧已补：`TimelineEvent::TrackSelected`（轨道头点击选择，
+  > 视图维护 `selected_tracks` 集合）与
+  > `TimelineEvent::TransitionChanged`（过渡楔形边缘拖拽改长度，
+  > 按 zoom 换算并钳制到片长）。14 个工具模式本体在 oak 侧实现。
+- [x] 素材箱（ProjectExplorer）：树 + 图标双视图，文件拖入经
   `FileDropEvent`，缩略图经 sprite atlas。
+  > `gpui_widgets::project_explorer`：数据无关 `ProjectDataSource`
+  > trait，树/图标双视图（纯 `flatten_tree` 单测）、文件拖入经
+  > `on_drop`（平台 FileDrop 转内部 drag）发出 `FileDropRequested`、
+  > 缩略图走 `img()`（sprite atlas）。`examples/project_explorer.rs`。
 
 ## W6. 示波器与音频表
 
