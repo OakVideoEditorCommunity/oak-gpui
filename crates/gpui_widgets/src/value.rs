@@ -186,7 +186,7 @@ pub enum ParseValueError {
 /// Implementations are injected into controls so hosts can localize or
 /// specialize the representation (e.g. timecode instead of frames, or
 /// fractions with a fixed denominator).
-pub trait ValueFormatter: 'static + Clone {
+pub trait ValueFormatter: 'static {
     /// Render a value as text.
     fn format(&self, value: SliderValue) -> SharedString;
     /// Parse text into a value. Must reject malformed input with

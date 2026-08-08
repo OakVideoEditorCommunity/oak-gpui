@@ -18,4 +18,5 @@
 //!   covered by plain unit tests.
 
 pub mod keyable;
+pub mod slider;
 pub mod value;
