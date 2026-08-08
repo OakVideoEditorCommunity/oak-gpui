@@ -1,0 +1,102 @@
+# Oak app/ 层 GPUI 重写计划（oak-gpui 侧工作项）
+
+> 面向实现者（DeepSeek）的任务书。主仓库：/Users/sunyu/Projects/oak
+> （引擎 RIIR 进行中，模块边界是 `include/<mod>/*.h` 纯 C ABI +
+> 引用计数句柄）。本文件列出 oak-gpui 仓库里需要完成的工作项。
+>
+> 已实现（本仓库，2026-08-09 提交）：`gpui::timeline` /
+> `gpui::node_graph` / `gpui::effect_stack` / `gpui::dock` 四个
+> NLE widget。
+>
+> 原则：widget 不直接改引擎状态，只发请求事件；引擎（oak C ABI）
+> 是唯一事实源。crates.io 有成熟库就不自造。测试驱动：每个 widget
+> 的状态机/几何计算必须有单测（参照 timeline/time.rs 的做法）。
+
+## W1. 表单控件库（咽喉项，最先做）
+
+位置：`crates/gpui_widgets/`（新 crate）。这是参数面板和全部对话框
+的前置依赖。
+
+对标 oak C++ 侧的 `app/widget/slider/` 与 `app/widget/nodeparamview/`：
+
+- [x] `Slider` 族：float / integer / rational（分式）/ 角度。
+  拖动改值（上下拖 + 微调修饰键）、双击直接输入、滚轮步进、
+  中键复位默认值。数值格式化与解析必须可注入。
+- [x] `SpinBox`（数字输入 + 上下按钮）。
+- [x] `ComboBox`（下拉选择；纯 gpui 弹层实现）。
+- [x] `CheckBox` / `RadioGroup`。
+- [x] `ColorSwatchButton`（色块按钮 + 点击弹取色器）；
+  `ColorPicker`（HSV 轮 + RGBA 输入 + 吸管占位）。
+- [x] `CurveEditor`（关键帧曲线编辑，供时间重映射等；canvas 绘制，
+  贝塞尔控制点拖拽）。
+- [x] 键控支持：每个可键控控件右侧的关键帧菱形按钮（状态：
+  无键/有键/在当前帧），点击发请求事件。
+- [x] 全部控件的状态逻辑（值域、步进、钳制、非法输入拒绝）有
+  单测；绘制走 gpui canvas/quad，不碰平台 API。
+
+## W2. 菜单与对话框框架
+
+位置：`crates/gpui_widgets/`（或独立 `gpui_dialogs`）。
+
+- [ ] `ContextMenu`/`MenuBar` 窗口内菜单组件（Zed 的菜单在 zed app
+  crate 而非 gpui，需要自带）：弹层定位、键盘导航、子菜单、勾选/
+  禁用态、快捷键展示。
+- [ ] `Modal` 对话框框架：模态遮罩、标题栏、按钮行（确定/取消/
+  应用）、Esc/Enter 默认键、尺寸约束。
+- [ ] 常用对话框原语：消息框（info/warning/error 三档）、文件选择
+  （包 `prompt_for_paths`/`prompt_for_new_path` 平台 API）、进度条
+  对话框（可取消）。
+- [ ] 单测：菜单模型（勾选/禁用/级联）、对话框结果路由。
+
+## W3. macOS 视频帧桥接（关键路径）
+
+目标：引擎渲染结果零拷贝上屏。
+
+- [ ] 引擎侧输出是 wgpu 纹理（Metal 后端）。在 `gpui_media` 或新
+  `oak_bridge` crate 里做 wgpu Metal 纹理 → IOSurface →
+  CVPixelBuffer 的包装（`CVMetalTextureCache` helper 已在
+  `gpui_media/src/media.rs`），输出给 `window.paint_surface`。
+- [ ] 保留 CPU 回读兜底路径（任何后端可用），但默认不走。
+- [ ] 验收：1080p/4K F32 帧连续上屏无掉帧（写一个 demo example：
+  循环显示测试图序列，测 FPS）；CI 无 GPU 环境跳过。
+- [ ] Windows/Linux 路径用 gpui_wgpu 的 `paint_surface(wgpu::Texture)`
+  直连，同 demo 验证。
+
+## W4. 播放同步与检视器 glue
+
+- [ ] `ViewerWidget`（新，放 `crates/gpui_widgets/` 或 oak 侧）：
+  画面区（W3 的 surface）+ 走带控制（播放/暂停/逐帧/入点出点）+
+  时间码显示 + 安全框/缩放开关。播放驱动：oak audio 引擎时钟经
+  C ABI 查询，`cx.spawn` + timer 刷新播放头。
+- [ ] 单测：时间码换算（复用 oakcore-rs Rational）、走带状态机。
+
+## W5. 时间线工具模式层
+
+- [ ] 在 oak 侧（不在本仓库）实现 14 个工具模式（ripple/roll/slip/
+  slide/razor/ 等）为 `gpui::timeline` 的 `TimelineEvent` 消费者 +
+  引擎命令映射。**本仓库侧配套**：`TimelineEvent` 覆盖不全的手势
+  （如 transition 拖拽、轨道选择）按需补事件。
+- [ ] 素材箱（ProjectExplorer）：树 + 图标双视图，文件拖入经
+  `FileDropEvent`，缩略图经 sprite atlas。
+
+## W6. 示波器与音频表
+
+- [ ] `Histogram` / `Vectorscope` / `Waveform` 检视组件（canvas
+  绘制，数据来自 oak render C ABI 的帧采样）。
+- [ ] `AudioLevelMeter` 表头（数据来自 oak audio C ABI）。
+
+## W7. 主题系统
+
+- [ ] 设计系统：把 oak 的 olive-dark/olive-light QSS 翻译成 gpui
+  的 `Colors`/样式结构，支持运行期切换。
+
+## 顺序与验收
+
+1. W1 → W2（解锁参数面板与对话框）
+2. W3（检视器能上屏）→ W4
+3. W5/W6 并行
+4. W7 随时
+
+每个 W 的完成标准：cargo test 绿
++ 一个可运行的 example 演示。
+widget 与 oak 引擎的联调在 oak 仓库侧做（本仓库只交付 widget）。
