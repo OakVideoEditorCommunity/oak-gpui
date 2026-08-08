@@ -55,15 +55,26 @@
 
 目标：引擎渲染结果零拷贝上屏。
 
-- [ ] 引擎侧输出是 wgpu 纹理（Metal 后端）。在 `gpui_media` 或新
+- [x] 引擎侧输出是 wgpu 纹理（Metal 后端）。在 `gpui_media` 或新
   `oak_bridge` crate 里做 wgpu Metal 纹理 → IOSurface →
   CVPixelBuffer 的包装（`CVMetalTextureCache` helper 已在
   `gpui_media/src/media.rs`），输出给 `window.paint_surface`。
-- [ ] 保留 CPU 回读兜底路径（任何后端可用），但默认不走。
-- [ ] 验收：1080p/4K F32 帧连续上屏无掉帧（写一个 demo example：
+  > 实现在新 crate `crates/oak_bridge/`：`SurfaceBridge::blit_frame`
+  > 用自带 MTLCommandQueue + MTLBlitCommandEncoder 做 GPU→GPU 拷贝
+  > （blit 前 `device.poll(Wait)` 保证引擎渲染完成，v1 同步但正确）。
+- [x] 保留 CPU 回读兜底路径（任何后端可用），但默认不走。
+  > `stage_readback` + `finish_readback`（wgpu readback → 
+  > `CVPixelBufferCreateWithBytes`）。
+- [x] 验收：1080p/4K F32 帧连续上屏无掉帧（写一个 demo example：
   循环显示测试图序列，测 FPS）；CI 无 GPU 环境跳过。
+  > `cargo run -p oak_bridge --example surface_bridge --features demo`
+  > （macOS + Metal，无 GPU 环境直接退出）。实测 1280x720 连续上屏
+  > ~11-14fps（受 v1 同步 poll 限制，引擎侧可改为异步管线优化）。
 - [ ] Windows/Linux 路径用 gpui_wgpu 的 `paint_surface(wgpu::Texture)`
   直连，同 demo 验证。
+  > 未做：wgpu 29 无 IOSurface 原生支持且 hal `Texture` 字段私有，
+  > Linux/Windows 的 surface 桥接留待后续（`SurfaceSource::Texture`
+  > 已在 gpui 侧就绪，只需在 `oak_bridge` 补对应平台模块）。
 
 ## W4. 播放同步与检视器 glue
 

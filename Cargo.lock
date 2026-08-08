@@ -4007,6 +4007,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "oak_bridge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "core-foundation 0.10.0",
+ "core-video",
+ "gpui",
+ "gpui_media",
+ "gpui_platform",
+ "metal",
+ "pollster 0.4.0",
+ "wgpu",
+]
+
+[[package]]
 name = "objc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
