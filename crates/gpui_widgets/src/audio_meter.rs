@@ -45,7 +45,7 @@ impl<D: AudioMeterDataSource> AudioLevelMeter<D> {
     }
 
     /// The current per-channel levels.
-    pub fn levels(&self, cx: &Context<Self>) -> Vec<f32> {
+    pub fn levels(&self, cx: &App) -> Vec<f32> {
         self.data.read(cx).levels()
     }
 
@@ -118,10 +118,52 @@ impl<D: AudioMeterDataSource> Render for AudioLevelMeter<D> {
 mod tests {
     use super::*;
     use crate::scopes::meter_lit_segments;
+    use gpui::{Entity, Render, TestAppContext, Window, div, px, size};
 
     #[test]
     fn meter_math_matches_scope_core() {
         assert_eq!(meter_lit_segments(0.0, SEGMENTS), 0);
         assert_eq!(meter_lit_segments(0.5, SEGMENTS), SEGMENTS / 2);
+    }
+
+    struct MockAudio(Vec<f32>);
+    impl AudioMeterDataSource for MockAudio {
+        fn levels(&self) -> Vec<f32> {
+            self.0.clone()
+        }
+    }
+
+    struct Host {
+        meter: Entity<AudioLevelMeter<MockAudio>>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.meter.clone())
+        }
+    }
+
+    #[gpui::test]
+    async fn meter_renders_and_decays_peak(cx: &mut TestAppContext) {
+        
+        cx.update(|cx| cx.init_colors());
+        let window = cx.open_window(size(px(200.0), px(60.0)), |window, cx| {
+            let audio = cx.new(|_| MockAudio(vec![0.8, 0.2]));
+            let meter = cx.new(|cx| AudioLevelMeter::new(4, audio, window, cx));
+            Host { meter }
+        });
+        cx.run_until_parked();
+
+        // update() refreshes peaks from levels.
+        let (peaks, levels) = window
+            .update(cx, |host, _, cx| {
+                host.meter.update(cx, |meter, cx| meter.update(cx));
+                let levels = host.meter.read(cx).levels(cx);
+                let peaks = host.meter.read(cx).peak.clone();
+                (peaks, levels)
+            })
+            .unwrap();
+        assert_eq!(levels, vec![0.8, 0.2]);
+        // Peaks track the levels on the first update.
+        assert!((peaks[0] - 0.8).abs() < 0.001);
     }
 }

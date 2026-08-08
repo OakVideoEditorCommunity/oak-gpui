@@ -138,6 +138,33 @@ fn paint_diamond(bounds: Bounds<Pixels>, state: KeyingState, window: &mut Window
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Context, Render, TestAppContext, Window, div, px, size};
+
+    struct Host {
+        control: usize,
+        state: KeyingState,
+    }
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(keying_diamond(self.control, self.state))
+        }
+    }
+
+    #[gpui::test]
+    async fn diamond_renders_in_a_window(cx: &mut TestAppContext) {
+        
+        use gpui::VisualTestContext;
+        cx.update(|cx| cx.init_colors());
+        let window = cx.open_window(size(px(60.0), px(60.0)), |_window, _cx| Host {
+            control: 3,
+            state: KeyingState::AtCurrentFrame,
+        });
+        cx.run_until_parked();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+    }
 
     #[test]
     fn request_round_trips() {

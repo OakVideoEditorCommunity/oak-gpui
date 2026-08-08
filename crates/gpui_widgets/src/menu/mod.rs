@@ -198,12 +198,7 @@ impl Render for MenuBar {
             .items_center()
             .px_2()
             .gap_1()
-            .bg(colors.container)
-            .on_mouse_down_out(
-                cx.listener(|this, _event: &gpui::MouseDownEvent, _window, cx| {
-                    this.close_menu(cx);
-                }),
-            );
+            .bg(colors.container);
 
         for (index, entry) in self.entries.clone().into_iter().enumerate() {
             let is_open = self.open == Some(index);
@@ -263,6 +258,12 @@ impl Render for MenuBar {
                 }),
             )
             .track_focus(&self.focus_handle)
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                    this.close_menu(cx);
+                }),
+            )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 match event.keystroke.key.as_str() {
                     "up" => this.navigate(-1, cx),
@@ -586,6 +587,7 @@ fn entry_at(bar: &MenuBar, index: usize) -> Option<&MenuItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, point, px, size};
 
     #[test]
     fn menu_bar_open_close_round_trip() {
@@ -605,5 +607,142 @@ mod tests {
         };
         assert_eq!(event.item, 7);
         assert_eq!(event.label, "Paste");
+    }
+
+    // --- interaction tests for the menu views ---
+
+    fn demo_entries() -> Vec<MenuBarEntry> {
+        vec![MenuBarEntry::new(
+            "File",
+            Menu::new(vec![
+                MenuItem::new(10, "Open…").with_shortcut("⌘O"),
+                MenuItem::new(11, "Save").with_shortcut("⌘S"),
+                MenuItem::new(12, "Quit").separated(),
+            ]),
+        )]
+    }
+
+    struct Host {
+        menu_bar: Entity<MenuBar>,
+        events: Vec<MenuBarEvent>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.menu_bar.clone())
+        }
+    }
+
+    fn make_bar(cx: &mut TestAppContext) -> (&'static mut VisualTestContext, Entity<Host>) {
+        cx.update(|cx| cx.init_colors());
+        let window = cx.open_window(size(px(400.0), px(120.0)), |window, cx| {
+            let menu_bar = cx.new(|cx| MenuBar::new(1, demo_entries(), window, cx));
+            let host = Host {
+                menu_bar,
+                events: Vec::new(),
+            };
+            cx.subscribe(
+                &host.menu_bar,
+                |host: &mut Host,
+                 _m: Entity<MenuBar>,
+                 event: &MenuBarEvent,
+                 _cx: &mut Context<Host>| {
+                    host.events.push(event.clone());
+                },
+            )
+            .detach();
+            host
+        });
+        cx.run_until_parked();
+        let host = window.root(cx).unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        (cx, host)
+    }
+
+    #[gpui::test]
+    async fn clicking_a_menu_title_opens_the_popup(cx: &mut TestAppContext) {
+        let (cx, _host) = make_bar(cx);
+        // Click the "File" title (top-left of the bar).
+        cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        let popup = cx.debug_bounds("menu-popup").expect("menu popup rendered");
+        assert!(popup.size.height > px(60.0), "popup should list the items");
+    }
+
+    #[gpui::test]
+    async fn clicking_a_menu_item_emits_triggered(cx: &mut TestAppContext) {
+        let (cx, host) = make_bar(cx);
+        cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        let popup = cx.debug_bounds("menu-popup").expect("menu popup rendered");
+        // The first item row is the first ~26px of the popup.
+        cx.simulate_click(
+            point(popup.left() + px(40.0), popup.top() + px(16.0)),
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+
+        let triggered = cx.read(|app| {
+            host.read(app).events.iter().any(|e| {
+                matches!(e, MenuBarEvent::Triggered { item: 10, .. })
+            })
+        });
+        assert!(triggered, "expected Triggered for the first item");
+    }
+
+    #[gpui::test]
+    async fn keyboard_navigation_triggers_the_hovered_item(cx: &mut TestAppContext) {
+        let (cx, host) = make_bar(cx);
+        cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        // Down from no selection lands on the first item; the second down
+        // moves to Save. Enter triggers it.
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("down");
+        cx.run_until_parked();
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+
+        let triggered = cx.read(|app| {
+            host.read(app).events.iter().any(|e| {
+                matches!(e, MenuBarEvent::Triggered { item: 11, .. })
+            })
+        });
+        assert!(triggered, "expected Triggered for the second item via keyboard");
+    }
+
+    #[gpui::test]
+    async fn escape_closes_the_menu(cx: &mut TestAppContext) {
+        let (cx, host) = make_bar(cx);
+        cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        assert!(cx.debug_bounds("menu-popup").is_some());
+
+        cx.simulate_keystrokes("escape");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        assert!(cx.debug_bounds("menu-popup").is_none(), "menu should close on escape");
+        let closed = cx.read(|app| {
+            host.read(app).events.iter().any(|e| matches!(e, MenuBarEvent::MenuClosed { .. }))
+        });
+        assert!(closed);
     }
 }

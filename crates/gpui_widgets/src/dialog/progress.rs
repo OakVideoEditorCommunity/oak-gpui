@@ -115,4 +115,38 @@ mod tests {
             });
         });
     }
+
+    #[gpui::test]
+    async fn progress_content_renders(cx: &mut TestAppContext) {
+        use gpui::{Entity, Render, VisualTestContext, Window, div, prelude::*, px, size};
+
+        struct Host {
+            content: Entity<ProgressContent>,
+        }
+        impl Render for Host {
+            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.content.clone())
+            }
+        }
+
+        cx.update(|cx| cx.init_colors());
+        let window = cx.open_window(size(px(320.0), px(80.0)), |_window, cx| {
+            let content = cx.new(|_| ProgressContent::new("Encoding", 0.5));
+            Host { content }
+        });
+        cx.run_until_parked();
+        let host = window.root(cx).unwrap();
+        window
+            .update(cx, |host, _, cx| {
+                host.content
+                    .update(cx, |content, cx| content.set_progress(0.75, cx));
+            })
+            .unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        let fraction = cx.read(|app| host.read(app).content.read(app).fraction());
+        assert_eq!(fraction, 0.75);
+    }
 }

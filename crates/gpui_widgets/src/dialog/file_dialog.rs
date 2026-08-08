@@ -87,7 +87,7 @@ pub fn file_dialog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{Entity, Render, TestAppContext, VisualTestContext, Window, div, px, size};
 
     #[gpui::test]
     async fn path_round_trips(cx: &mut TestAppContext) {
@@ -100,6 +100,33 @@ mod tests {
                 content.set_path("/tmp/movie.mov", cx);
                 assert_eq!(content.path(cx), "/tmp/movie.mov");
             });
+        });
+    }
+
+    #[gpui::test]
+    async fn file_dialog_content_renders(cx: &mut TestAppContext) {
+        struct Host {
+            content: Entity<FileDialogContent>,
+        }
+        impl Render for Host {
+            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.content.clone())
+            }
+        }
+
+        cx.update(|cx| cx.init_colors());
+        let window = cx.open_window(size(px(400.0), px(120.0)), |_window, cx| {
+            let content = cx.new(|cx| {
+                let editor = cx.new(|cx| EditableTextState::new(StringStorage::default(), cx));
+                FileDialogContent { editor }
+            });
+            content.update(cx, |content, cx| content.set_path("/tmp/movie.mov", cx));
+            Host { content }
+        });
+        cx.run_until_parked();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
         });
     }
 }

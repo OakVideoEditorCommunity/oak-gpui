@@ -255,8 +255,12 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
                 for (entry, depth) in rows {
                     let is_selected = selected == Some(entry.id);
                     let click_entry = entry.clone();
+                    let entry_id = entry.id;
                     let mut row = div()
                         .id(ElementId::named_usize("gpui-widgets-explorer-entry", entry.id as usize))
+                        .debug_selector(move || {
+                            format!("gpui-widgets-explorer-entry-{entry_id}").into()
+                        })
                         .h(px(24.0))
                         .flex()
                         .items_center()
@@ -423,6 +427,10 @@ fn toggle_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::{
+        Entity, Modifiers, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext,
+        px, size,
+    };
 
     #[test]
     fn flatten_tree_honors_expansion() {
@@ -460,5 +468,140 @@ mod tests {
         assert_eq!(plain.thumbnail, None);
         let with = plain.clone().with_thumbnail("thumbs/x.png");
         assert_eq!(with.thumbnail.as_deref(), Some("thumbs/x.png"));
+    }
+
+    // --- view interaction tests ---
+
+    struct MockData;
+    impl ProjectDataSource for MockData {
+        fn roots(&self) -> Vec<ProjectEntry> {
+            vec![
+                ProjectEntry::new(1, "Footage", true),
+                ProjectEntry::new(2, "Notes.md", false),
+            ]
+        }
+        fn children(&self, parent_id: u64) -> Vec<ProjectEntry> {
+            if parent_id == 1 {
+                vec![ProjectEntry::new(10, "a.mov", false)]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    struct Host {
+        explorer: Entity<ProjectExplorer<MockData>>,
+        events: Vec<ProjectExplorerEvent>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.explorer.clone())
+        }
+    }
+
+    fn make_explorer(cx: &mut TestAppContext) -> (&'static mut VisualTestContext, Entity<Host>) {
+        cx.update(|cx| cx.init_colors());
+        let window = cx.open_window(size(px(300.0), px(240.0)), |window, cx| {
+            let data = cx.new(|_| MockData);
+            let explorer = cx.new(|cx| ProjectExplorer::new(1, data, window, cx));
+            let host = Host {
+                explorer,
+                events: Vec::new(),
+            };
+            cx.subscribe(
+                &host.explorer,
+                |host: &mut Host,
+                 _e: Entity<ProjectExplorer<MockData>>,
+                 event: &ProjectExplorerEvent,
+                 _cx: &mut Context<Host>| {
+                    host.events.push(event.clone());
+                },
+            )
+            .detach();
+            host
+        });
+        cx.run_until_parked();
+        let host = window.root(cx).unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        (cx, host)
+    }
+
+    #[gpui::test]
+    async fn clicking_a_folder_expands_it(cx: &mut TestAppContext) {
+        let (cx, _host) = make_explorer(cx);
+        // The first row (Footage) is at the top of the content area.
+        let first = cx
+            .debug_bounds("gpui-widgets-explorer-entry-1")
+            .expect("first row rendered");
+        cx.simulate_click(first.center(), Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        // The child a.mov should now be visible.
+        let child = cx.debug_bounds("gpui-widgets-explorer-entry-10");
+        assert!(child.is_some(), "expanded folder should reveal its child");
+    }
+
+    #[gpui::test]
+    async fn double_clicking_a_file_emits_open_request(cx: &mut TestAppContext) {
+        let (cx, host) = make_explorer(cx);
+        // Expand Footage first.
+        let first = cx
+            .debug_bounds("gpui-widgets-explorer-entry-1")
+            .expect("first row rendered");
+        cx.simulate_click(first.center(), Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        // Double-click a.mov.
+        let child = cx
+            .debug_bounds("gpui-widgets-explorer-entry-10")
+            .expect("child row rendered");
+        let modifiers = Modifiers::none();
+        cx.simulate_event(MouseDownEvent {
+            position: child.center(),
+            modifiers,
+            button: MouseButton::Left,
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            position: child.center(),
+            modifiers,
+            button: MouseButton::Left,
+            click_count: 2,
+        });
+        cx.run_until_parked();
+
+        let opened = cx.read(|app| {
+            host.read(app).events.iter().any(|e| {
+                matches!(e, ProjectExplorerEvent::OpenRequested { id: 10, .. })
+            })
+        });
+        assert!(opened, "expected an OpenRequested for a.mov");
+    }
+
+    #[gpui::test]
+    async fn switching_to_icons_emits_view_changed(cx: &mut TestAppContext) {
+        let (cx, host) = make_explorer(cx);
+        let toggle = cx
+            .debug_bounds("gpui-widgets-explorer-icons")
+            .expect("icons toggle rendered");
+        cx.simulate_click(toggle.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        let changed = cx.read(|app| {
+            host.read(app).events.iter().any(|e| {
+                matches!(
+                    e,
+                    ProjectExplorerEvent::ViewChanged { view: ExplorerView::Icons, .. }
+                )
+            })
+        });
+        assert!(changed, "expected a ViewChanged(Icons) event");
     }
 }

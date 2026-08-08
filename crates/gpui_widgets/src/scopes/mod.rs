@@ -47,7 +47,7 @@ impl<D: LumaDataSource> Histogram<D> {
     }
 
     /// The current histogram bins (for tests and hosts).
-    pub fn bins(&self, cx: &Context<Self>) -> Vec<u32> {
+    pub fn bins(&self, cx: &App) -> Vec<u32> {
         histogram_bins(&self.data.read(cx).luma_samples(), 64)
     }
 }
@@ -104,7 +104,7 @@ impl<D: LumaDataSource> Waveform<D> {
     }
 
     /// The current envelope columns.
-    pub fn envelope(&self, cx: &Context<Self>) -> Vec<(f32, f32)> {
+    pub fn envelope(&self, cx: &App) -> Vec<(f32, f32)> {
         waveform_envelope(&self.data.read(cx).luma_samples(), 128)
     }
 }
@@ -162,7 +162,7 @@ impl<D: ChromaDataSource> Vectorscope<D> {
     }
 
     /// The projected chroma points.
-    pub fn points(&self, cx: &Context<Self>) -> Vec<(f32, f32)> {
+    pub fn points(&self, cx: &App) -> Vec<(f32, f32)> {
         vectorscope_points(&self.data.read(cx).chroma_samples())
     }
 }
@@ -210,5 +210,80 @@ impl<D: ChromaDataSource> Render for Vectorscope<D> {
             },
         )
         .size_full()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Entity, Render, TestAppContext, Window, div, px, size};
+
+    struct MockLuma(Vec<f32>);
+    impl LumaDataSource for MockLuma {
+        fn luma_samples(&self) -> Vec<f32> {
+            self.0.clone()
+        }
+    }
+    struct MockChroma(Vec<(f32, f32)>);
+    impl ChromaDataSource for MockChroma {
+        fn chroma_samples(&self) -> Vec<(f32, f32)> {
+            self.0.clone()
+        }
+    }
+
+    struct Host {
+        histogram: Entity<Histogram<MockLuma>>,
+        waveform: Entity<Waveform<MockLuma>>,
+        vectorscope: Entity<Vectorscope<MockChroma>>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(self.histogram.clone())
+                .child(self.waveform.clone())
+                .child(self.vectorscope.clone())
+        }
+    }
+
+    #[gpui::test]
+    async fn scopes_render_from_mock_data(cx: &mut TestAppContext) {
+        
+        use gpui::VisualTestContext;
+        cx.update(|cx| cx.init_colors());
+        let window = cx.open_window(size(px(300.0), px(200.0)), |window, cx| {
+            let luma = cx.new(|_| MockLuma((0..100).map(|i| i as f32 / 100.0).collect()));
+            let chroma = cx.new(|_| MockChroma(vec![(0.5, 0.5), (0.75, 0.25), (0.25, 0.75)]));
+            let histogram = cx.new(|cx| Histogram::new(1, luma.clone(), window, cx));
+            let waveform = cx.new(|cx| Waveform::new(2, luma.clone(), window, cx));
+            let vectorscope = cx.new(|cx| Vectorscope::new(3, chroma.clone(), window, cx));
+            Host {
+                histogram,
+                waveform,
+                vectorscope,
+            }
+        });
+        cx.run_until_parked();
+        let host = window.root(cx).unwrap();
+        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        // Force a draw so the canvas paint closures run (no double-lease:
+        // VisualTestContext::update goes through App::update_window).
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        let (bins, envelope, points) = cx.read(|app| {
+            let host = host.read(app);
+            (
+                host.histogram.read(app).bins(app),
+                host.waveform.read(app).envelope(app),
+                host.vectorscope.read(app).points(app),
+            )
+        });
+        assert_eq!(bins.len(), 64);
+        let total: u32 = bins.iter().sum();
+        assert_eq!(total, 100);
+        assert_eq!(envelope.len(), 128);
+        assert_eq!(points.len(), 3);
     }
 }

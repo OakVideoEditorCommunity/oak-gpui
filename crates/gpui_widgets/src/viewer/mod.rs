@@ -354,18 +354,42 @@ mod tests {
         }
     }
 
+    struct Host {
+        viewer: Entity<ViewerWidget<MockClock>>,
+        events: Vec<ViewerEvent>,
+    }
+    impl Render for Host {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.viewer.clone())
+        }
+    }
+
     #[gpui::test]
     async fn play_button_emits_play_request(cx: &mut TestAppContext) {
-        struct Host {
-            viewer: Entity<ViewerWidget<MockClock>>,
-            events: Vec<ViewerEvent>,
-        }
-        impl Render for Host {
-            fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-                div().size_full().child(self.viewer.clone())
-            }
-        }
+        let (cx, host) = make_host(cx);
+        // The play button sits on the left of the transport bar at the bottom.
+        let play = cx
+            .debug_bounds("gpui-widgets-viewer-play")
+            .expect("play button rendered");
+        cx.simulate_click(play.center(), Modifiers::none());
+        cx.run_until_parked();
 
+        let requested = cx.read(|app| {
+            host.read(app).events.iter().any(|e| {
+                matches!(e, ViewerEvent::PlayRequested { control: 1 })
+            })
+        });
+        assert!(requested, "expected a PlayRequested event");
+    }
+
+    #[test]
+    fn timecode_formatting_reuses_timeline() {
+        let frame = Frame(3000);
+        let text = format_timecode(frame, FrameRate::new(30, 1), TimeDisplay::Timecode);
+        assert_eq!(text, "00:01:40:00");
+    }
+
+    fn make_host(cx: &mut TestAppContext) -> (&'static mut VisualTestContext, Entity<Host>) {
         cx.update(|cx| cx.init_colors());
         let window = cx.open_window(size(px(640.0), px(420.0)), |window, cx| {
             let clock = cx.new(|_| MockClock {
@@ -391,27 +415,46 @@ mod tests {
         });
         cx.run_until_parked();
         let host = window.root(cx).unwrap();
-
         let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
-        // The play button sits on the left of the transport bar at the bottom.
-        let play = cx
-            .debug_bounds("gpui-widgets-viewer-play")
-            .expect("play button rendered");
-        cx.simulate_click(play.center(), Modifiers::none());
+        (cx, host)
+    }
+
+    #[gpui::test]
+    async fn step_button_emits_step_request(cx: &mut TestAppContext) {
+        let (cx, host) = make_host(cx);
+        let step = cx
+            .debug_bounds("gpui-widgets-viewer-step-forward")
+            .expect("step button rendered");
+        cx.simulate_click(step.center(), Modifiers::none());
         cx.run_until_parked();
 
         let requested = cx.read(|app| {
             host.read(app).events.iter().any(|e| {
-                matches!(e, ViewerEvent::PlayRequested { control: 1 })
+                matches!(e, ViewerEvent::StepRequested { delta: 1, .. })
             })
         });
-        assert!(requested, "expected a PlayRequested event");
+        assert!(requested, "expected a StepRequested(+1) event");
     }
 
-    #[test]
-    fn timecode_formatting_reuses_timeline() {
-        let frame = Frame(3000);
-        let text = format_timecode(frame, FrameRate::new(30, 1), TimeDisplay::Timecode);
-        assert_eq!(text, "00:01:40:00");
+    #[gpui::test]
+    async fn safe_frame_toggle_emits_and_switches(cx: &mut TestAppContext) {
+        let (cx, host) = make_host(cx);
+        let toggle = cx
+            .debug_bounds("gpui-widgets-viewer-safe")
+            .expect("safe-frame button rendered");
+        cx.simulate_click(toggle.center(), Modifiers::none());
+        cx.run_until_parked();
+
+        let (requested, shown) = cx.read(|app| {
+            let host = host.read(app);
+            (
+                host.events.iter().any(|e| {
+                    matches!(e, ViewerEvent::ToggleSafeFramesRequested { .. })
+                }),
+                host.viewer.read(app).show_safe_frames,
+            )
+        });
+        assert!(requested, "expected a ToggleSafeFramesRequested event");
+        assert!(shown, "safe frames should now be shown locally");
     }
 }
