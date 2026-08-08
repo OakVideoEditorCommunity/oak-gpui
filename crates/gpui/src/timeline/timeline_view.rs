@@ -157,6 +157,32 @@ pub enum TimelineEvent {
     /// [`TimelineView::selection`]. Not undoable.
     SelectionChanged,
 
+    /// A track header was clicked, toggling the track's selection state.
+    ///
+    /// The widget keeps the selected-track set locally (readable from
+    /// [`TimelineView::selected_tracks`]); the host may persist it. Not
+    /// undoable.
+    TrackSelected {
+        /// Index of the clicked track.
+        track: usize,
+        /// Whether the track is now selected.
+        selected: bool,
+    },
+
+    /// The user dragged a transition wedge's edge to change its length.
+    ///
+    /// `new_length` is the requested transition duration in frames, clamped
+    /// to the clip length and to a one-frame minimum. The host validates
+    /// against the actual transition implementation and re-notifies.
+    TransitionChanged {
+        /// The clip whose transition was grabbed.
+        clip: ClipId,
+        /// Which edge the transition sits on.
+        edge: TrimEdge,
+        /// Requested new transition length.
+        new_length: Frame,
+    },
+
     /// A track's height changed via header-separator drag. The host should
     /// write this back so [`TrackData::height`](super::TrackData::height)
     /// returns it on the next read.
@@ -199,6 +225,8 @@ pub struct TimelineView<D: TimelineDataSource> {
     /// read access; mutate through [`TimelineState`]'s methods to preserve
     /// invariants.
     pub state: TimelineState,
+    /// The set of tracks selected via their headers.
+    selected_tracks: BTreeSet<usize>,
     focus_handle: FocusHandle,
 }
 
@@ -223,8 +251,14 @@ impl<D: TimelineDataSource> TimelineView<D> {
         TimelineView {
             source,
             state: TimelineState::new(),
+            selected_tracks: BTreeSet::new(),
             focus_handle,
         }
+    }
+
+    /// The set of tracks selected via header clicks.
+    pub fn selected_tracks(&self) -> &BTreeSet<usize> {
+        &self.selected_tracks
     }
 
     /// Builder: sets the initial zoom (pixels per frame), clamped to
@@ -529,6 +563,49 @@ impl<D: TimelineDataSource> TimelineView<D> {
         }
     }
 
+    /// Apply a transition-resize drag move: scale the requested length by the
+    /// horizontal mouse delta and clamp to the clip length.
+    fn update_transition_drag(
+        &mut self,
+        event: &DragMoveEvent<Arc<RwLock<TransitionDrag>>>,
+        cx: &mut Context<Self>,
+    ) {
+        let drag = Arc::clone(event.drag(cx));
+        let press = cx
+            .active_drag
+            .as_ref()
+            .map(|drag| drag.cursor_offset)
+            .unwrap_or_default();
+        let now = event.event.position - event.bounds.origin;
+        let dx = now.x - press.x;
+        let clip_len = {
+            let range = self.clip_range(drag.read().unwrap().clip, cx);
+            range.end - range.start
+        };
+        let mut drag = drag.write().expect("transition drag lock is not poisoned");
+        let frames_per_pixel = 1.0 / self.state.zoom as f64;
+        let delta = (dx.0 as f64 * frames_per_pixel).round() as i64;
+        let requested = drag.original_length.0 + delta;
+        drag.new_length = Frame(requested.clamp(1, clip_len.0.max(1)));
+        cx.notify();
+    }
+
+    /// Emits [`TimelineEvent::TransitionChanged`] for a finished resize.
+    fn finish_transition_drag(&mut self, drag: &Arc<RwLock<TransitionDrag>>, cx: &mut Context<Self>) {
+        let (clip, edge, original_length, new_length) = {
+            let drag = drag.read().expect("transition drag lock is not poisoned");
+            (drag.clip, drag.edge, drag.original_length, drag.new_length)
+        };
+        if new_length != original_length {
+            cx.emit(TimelineEvent::TransitionChanged {
+                clip,
+                edge,
+                new_length,
+            });
+            cx.notify();
+        }
+    }
+
     /// Emits [`TimelineEvent::TrackHeightChanged`] for a finished resize.
     fn finish_height_drag(&mut self, drag: &Arc<RwLock<HeightDrag>>, cx: &mut Context<Self>) {
         let (track, start_height, new_height) = {
@@ -683,6 +760,18 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
                     this.finish_height_drag(drag, cx);
                 }),
             )
+            .on_drag_move(
+                cx.listener(
+                    |this, event: &DragMoveEvent<Arc<RwLock<TransitionDrag>>>, _window, cx| {
+                        this.update_transition_drag(event, cx);
+                    },
+                ),
+            )
+            .on_drop(
+                cx.listener(|this, drag: &Arc<RwLock<TransitionDrag>>, _window, cx| {
+                    this.finish_transition_drag(drag, cx);
+                }),
+            )
             .children(rows.iter().map(|row| {
                 let height = row.height;
                 let separator_y = row.y + height - TrackHeader::SEPARATOR_HEIGHT;
@@ -690,11 +779,34 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
                     .h(px(height))
                     .relative()
                     .child(
-                        TrackHeader::new(row.index, row.name.clone(), row.kind)
-                            .locked(row.locked)
-                            .muted(row.muted)
-                            .solo(row.solo)
-                            .visible(row.visible),
+                        div()
+                            .id(ElementId::named_usize("timeline-track-header", row.index))
+                            .h(px(height - TrackHeader::SEPARATOR_HEIGHT))
+                            .cursor_pointer()
+                            .on_click({
+                                let track = row.index;
+                                cx.listener(move |this, _event: &crate::ClickEvent, _window, cx| {
+                                    let selected = if this.selected_tracks.contains(&track) {
+                                        this.selected_tracks.remove(&track);
+                                        false
+                                    } else {
+                                        this.selected_tracks.insert(track);
+                                        true
+                                    };
+                                    cx.emit(TimelineEvent::TrackSelected {
+                                        track,
+                                        selected,
+                                    });
+                                    cx.notify();
+                                })
+                            })
+                            .child(
+                                TrackHeader::new(row.index, row.name.clone(), row.kind)
+                                    .locked(row.locked)
+                                    .muted(row.muted)
+                                    .solo(row.solo)
+                                    .visible(row.visible),
+                            ),
                     )
                     .child(
                         div()
@@ -883,6 +995,58 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
                                     .into_any_element(),
                             );
                         }
+
+                        // Transition-resize handles sit at the wedges' edges.
+                        if let Some(transition) = clip.in_transition {
+                            children.push(
+                                div()
+                                    .absolute()
+                                    .left(px(0.))
+                                    .top(px(0.))
+                                    .bottom(px(0.))
+                                    .w(px(TRIM_HANDLE_WIDTH))
+                                    .id(ElementId::named_usize(
+                                        "timeline-transition-handle",
+                                        clip.id.0 as usize,
+                                    ))
+                                    .cursor_ew_resize()
+                                    .on_drag(
+                                        Arc::new(RwLock::new(TransitionDrag {
+                                            clip: clip.id,
+                                            edge: TrimEdge::Start,
+                                            original_length: transition.end,
+                                            new_length: transition.end,
+                                        })),
+                                        drag_ghost,
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
+                        if let Some(transition) = clip.out_transition {
+                            children.push(
+                                div()
+                                    .absolute()
+                                    .right(px(0.))
+                                    .top(px(0.))
+                                    .bottom(px(0.))
+                                    .w(px(TRIM_HANDLE_WIDTH))
+                                    .id(ElementId::named_usize(
+                                        "timeline-transition-handle",
+                                        clip.id.0 as usize,
+                                    ))
+                                    .cursor_ew_resize()
+                                    .on_drag(
+                                        Arc::new(RwLock::new(TransitionDrag {
+                                            clip: clip.id,
+                                            edge: TrimEdge::End,
+                                            original_length: transition.end,
+                                            new_length: transition.end,
+                                        })),
+                                        drag_ghost,
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
                         div()
                             .absolute()
                             .left(px(x0))
@@ -945,6 +1109,14 @@ struct TrimDrag {
     edge: TrimEdge,
     original_frame: Frame,
     new_frame: Frame,
+}
+
+/// In-flight payload of a transition-resize drag.
+struct TransitionDrag {
+    clip: ClipId,
+    edge: TrimEdge,
+    original_length: Frame,
+    new_length: Frame,
 }
 
 /// Shared state for a track-height resize gesture.
