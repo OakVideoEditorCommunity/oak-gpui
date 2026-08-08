@@ -29,7 +29,9 @@ use image::RgbaImage;
 use core_foundation::base::TCFType;
 use core_video::{
     metal_texture::CVMetalTextureGetTexture, metal_texture_cache::CVMetalTextureCache,
-    pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    pixel_buffer::{
+        kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    },
 };
 use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
@@ -1838,33 +1840,48 @@ impl MetalRenderer {
                 DevicePixels::from(surface.image_buffer.get_height() as i32),
             );
 
-            assert_eq!(
-                surface.image_buffer.get_pixel_format(),
-                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-            );
+            let is_bgra = match surface.image_buffer.get_pixel_format() {
+                kCVPixelFormatType_420YpCbCr8BiPlanarFullRange => false,
+                kCVPixelFormatType_32BGRA => true,
+                other => {
+                    log::error!("unsupported surface pixel format: {other}");
+                    return false;
+                }
+            };
 
+            // Y (or the whole BGRA image) texture from plane 0.
             let y_texture = self
                 .core_video_texture_cache
                 .create_texture_from_image(
                     surface.image_buffer.as_concrete_TypeRef(),
                     None,
-                    MTLPixelFormat::R8Unorm,
+                    if is_bgra {
+                        MTLPixelFormat::BGRA8Unorm
+                    } else {
+                        MTLPixelFormat::R8Unorm
+                    },
                     surface.image_buffer.get_width_of_plane(0),
                     surface.image_buffer.get_height_of_plane(0),
                     0,
                 )
                 .unwrap();
-            let cb_cr_texture = self
-                .core_video_texture_cache
-                .create_texture_from_image(
-                    surface.image_buffer.as_concrete_TypeRef(),
-                    None,
-                    MTLPixelFormat::RG8Unorm,
-                    surface.image_buffer.get_width_of_plane(1),
-                    surface.image_buffer.get_height_of_plane(1),
-                    1,
+
+            let cb_cr_texture = if is_bgra {
+                None
+            } else {
+                Some(
+                    self.core_video_texture_cache
+                        .create_texture_from_image(
+                            surface.image_buffer.as_concrete_TypeRef(),
+                            None,
+                            MTLPixelFormat::RG8Unorm,
+                            surface.image_buffer.get_width_of_plane(1),
+                            surface.image_buffer.get_height_of_plane(1),
+                            1,
+                        )
+                        .unwrap(),
                 )
-                .unwrap();
+            };
 
             align_offset(instance_offset);
             let next_offset = *instance_offset + mem::size_of::<Surface>();
@@ -1882,15 +1899,17 @@ impl MetalRenderer {
                 mem::size_of_val(&texture_size) as u64,
                 &texture_size as *const Size<DevicePixels> as *const _,
             );
-            // let y_texture = y_texture.get_texture().unwrap().
             command_encoder.set_fragment_texture(SurfaceInputIndex::YTexture as u64, unsafe {
                 let texture = CVMetalTextureGetTexture(y_texture.as_concrete_TypeRef());
                 Some(metal::TextureRef::from_ptr(texture as *mut _))
             });
-            command_encoder.set_fragment_texture(SurfaceInputIndex::CbCrTexture as u64, unsafe {
-                let texture = CVMetalTextureGetTexture(cb_cr_texture.as_concrete_TypeRef());
-                Some(metal::TextureRef::from_ptr(texture as *mut _))
-            });
+            command_encoder.set_fragment_texture(
+                SurfaceInputIndex::CbCrTexture as u64,
+                cb_cr_texture.as_ref().map(|texture| unsafe {
+                    let texture = CVMetalTextureGetTexture(texture.as_concrete_TypeRef());
+                    metal::TextureRef::from_ptr(texture as *mut _)
+                }),
+            );
 
             unsafe {
                 let buffer_contents = (instance_buffer.metal_buffer.contents() as *mut u8)
@@ -1901,6 +1920,7 @@ impl MetalRenderer {
                     SurfaceBounds {
                         bounds: surface.bounds,
                         content_mask: surface.content_mask,
+                        is_bgra: u32::from(is_bgra),
                     },
                 );
             }
@@ -2138,6 +2158,9 @@ pub struct PathSprite {
 pub struct SurfaceBounds {
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    /// `1` when the surface is a single-plane BGRA buffer (sampled directly,
+    /// no YUV conversion), `0` for the biplanar 4:2:0 video format.
+    pub is_bgra: u32,
 }
 
 #[cfg(any(test, feature = "test-support"))]

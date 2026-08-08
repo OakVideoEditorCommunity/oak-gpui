@@ -28,3 +28,4 @@ pub mod radio_group;
 pub mod slider;
 pub mod spinbox;
 pub mod value;
+pub mod viewer;

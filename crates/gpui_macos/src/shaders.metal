@@ -850,12 +850,14 @@ fragment float4 path_sprite_fragment(
 struct SurfaceVertexOutput {
   float4 position [[position]];
   float2 texture_position;
+  float surface_is_bgra;
   float clip_distance [[clip_distance]][4];
 };
 
 struct SurfaceFragmentInput {
   float4 position [[position]];
   float2 texture_position;
+  float surface_is_bgra;
 };
 
 vertex SurfaceVertexOutput surface_vertex(
@@ -878,6 +880,7 @@ vertex SurfaceVertexOutput surface_vertex(
   return SurfaceVertexOutput{
       device_position,
       texture_position,
+      (float)surface.is_bgra,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
@@ -892,6 +895,12 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
                float4(+0.0000f, -0.3441f, +1.7720f, +0.0000f),
                float4(+1.4020f, -0.7141f, +0.0000f, +0.0000f),
                float4(-0.7010f, +0.5291f, -0.8860f, +1.0000f));
+  if (input.surface_is_bgra > 0.5) {
+    // BGRA8Unorm samples with .r = blue, .b = red; swizzle to RGBA.
+    float4 bgra = y_texture.sample(texture_sampler, input.texture_position);
+    return float4(bgra.b, bgra.g, bgra.r, bgra.a);
+  }
+
   float4 ycbcr = float4(
       y_texture.sample(texture_sampler, input.texture_position).r,
       cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);

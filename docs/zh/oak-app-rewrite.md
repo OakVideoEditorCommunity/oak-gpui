@@ -78,11 +78,22 @@
 
 ## W4. 播放同步与检视器 glue
 
-- [ ] `ViewerWidget`（新，放 `crates/gpui_widgets/` 或 oak 侧）：
+- [x] `ViewerWidget`（新，放 `crates/gpui_widgets/` 或 oak 侧）：
   画面区（W3 的 surface）+ 走带控制（播放/暂停/逐帧/入点出点）+
   时间码显示 + 安全框/缩放开关。播放驱动：oak audio 引擎时钟经
   C ABI 查询，`cx.spawn` + timer 刷新播放头。
-- [ ] 单测：时间码换算（复用 oakcore-rs Rational）、走带状态机。
+  > 实现在 `gpui_widgets::viewer`：`PlaybackClock` trait（host 在
+  > oak 侧经 C ABI 实现），widget 以 ~60Hz timer 轮询并把走带操作
+  > 作为 `ViewerEvent` 请求发出；时间码复用 `gpui::timeline::time`
+  > 的 `format_timecode`（含 `TimeDisplay::Timecode`）。
+- [x] 单测：时间码换算（复用 oakcore-rs Rational）、走带状态机。
+  > `transport.rs` 纯状态机单测（advance/loop/step/in-out）+ 时间码
+  > 测试；`examples/viewer.rs`（macOS 生成测试帧上屏，非 macOS 显
+  > 示占位）。
+  > 附带修复：`gpui_macos` 的 Surface 渲染此前只接受 YUV 420 双
+  > 平面缓冲，为让引擎的 BGRA 帧直接上屏，给 `metal_renderer` +
+  > `shaders.metal` 增加了单平面 32BGRA 分支（SurfaceBounds 带
+  > `is_bgra` 标志，shader 直接采样 BGRA 并交换到 RGBA）。
 
 ## W5. 时间线工具模式层
 
