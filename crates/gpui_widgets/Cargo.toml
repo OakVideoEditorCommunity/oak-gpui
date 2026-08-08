@@ -1,0 +1,21 @@
+[package]
+name = "gpui_widgets"
+version = "0.1.0"
+edition.workspace = true
+authors = ["Oak <oak@users.noreply.github.com>"]
+description = "Form controls, menus, dialogs and NLE widgets built on gpui"
+publish = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+gpui_elements = { path = "../gpui_elements" }
+thiserror.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }

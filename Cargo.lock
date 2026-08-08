@@ -2758,6 +2758,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_widgets"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "gpui_elements",
+ "gpui_platform",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "gpui_windows"
 version = "0.1.0"
 dependencies = [

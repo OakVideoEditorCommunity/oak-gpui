@@ -19,6 +19,7 @@ members = [
   "./crates/gpui_media/",
   "./crates/gpui_zed_util/",
   "./crates/gpui_ce_util/",
+  "./crates/gpui_widgets/",
   "./tooling/perf/",
 ]
 default-members = ["./crates/gpui/"]
