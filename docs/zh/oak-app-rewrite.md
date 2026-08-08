@@ -38,15 +38,18 @@
 
 位置：`crates/gpui_widgets/`（或独立 `gpui_dialogs`）。
 
-- [ ] `ContextMenu`/`MenuBar` 窗口内菜单组件（Zed 的菜单在 zed app
+- [x] `ContextMenu`/`MenuBar` 窗口内菜单组件（Zed 的菜单在 zed app
   crate 而非 gpui，需要自带）：弹层定位、键盘导航、子菜单、勾选/
   禁用态、快捷键展示。
-- [ ] `Modal` 对话框框架：模态遮罩、标题栏、按钮行（确定/取消/
+- [x] `Modal` 对话框框架：模态遮罩、标题栏、按钮行（确定/取消/
   应用）、Esc/Enter 默认键、尺寸约束。
-- [ ] 常用对话框原语：消息框（info/warning/error 三档）、文件选择
+- [x] 常用对话框原语：消息框（info/warning/error 三档）、文件选择
   （包 `prompt_for_paths`/`prompt_for_new_path` 平台 API）、进度条
   对话框（可取消）。
-- [ ] 单测：菜单模型（勾选/禁用/级联）、对话框结果路由。
+  > 注：本 fork 尚无 `prompt_for_paths`/`prompt_for_new_path` 平台
+  > API（已核实 window/platform 均无），文件对话框先用纯 gpui 模态 +
+  > 路径输入框实现；后续接入真实平台选择器时替换内容即可。
+- [x] 单测：菜单模型（勾选/禁用/级联）、对话框结果路由。
 
 ## W3. macOS 视频帧桥接（关键路径）
 

@@ -23,3 +23,7 @@ gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
 [[example]]
 name = "controls"
 path = "examples/controls.rs"
+
+[[example]]
+name = "menus_dialogs"
+path = "examples/menus_dialogs.rs"
