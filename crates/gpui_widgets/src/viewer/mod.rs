@@ -14,9 +14,11 @@ pub use transport::*;
 
 use gpui::timeline::{FrameRate, TimeDisplay, format_timecode};
 use gpui::{
-    App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    ObjectFit, Render, SurfaceSource, Window, colors::DefaultColors, div, prelude::*, px, surface,
+    AnyElement, App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, ObjectFit, Render, RenderImage, SurfaceSource, Window, colors::DefaultColors, div,
+    img, prelude::*, px, surface,
 };
+use std::sync::Arc;
 
 /// A request emitted by the viewer.
 #[derive(Debug, Clone, PartialEq)]
@@ -65,13 +67,29 @@ pub enum ViewerEvent {
     },
 }
 
+/// The picture source of a [`ViewerWidget`].
+///
+/// On macOS the fast path is a CoreVideo [`SurfaceSource`]; on platforms
+/// without CVPixelBuffer (or when the engine only produces CPU frames) use
+/// [`ViewerFrameSource::CpuFrame`].
+#[derive(Clone)]
+pub enum ViewerFrameSource {
+    /// A platform surface: a CoreVideo pixel buffer on macOS, or a GPU
+    /// texture handle on Linux/FreeBSD.
+    Surface(SurfaceSource),
+    /// A CPU-side frame as raw bytes in a [`RenderImage`] (BGRA8, row-major,
+    /// top-to-bottom), uploaded through gpui's sprite atlas on every
+    /// platform — the path to use when no platform surface is available.
+    CpuFrame(Arc<RenderImage>),
+}
+
 /// The viewer widget.
 pub struct ViewerWidget<C: PlaybackClock> {
     control: usize,
     clock: Entity<C>,
     frame_rate: FrameRate,
     transport: TransportState,
-    frame_source: Option<SurfaceSource>,
+    frame_source: Option<ViewerFrameSource>,
     focus_handle: FocusHandle,
     show_safe_frames: bool,
     zoom: bool,
@@ -122,7 +140,19 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 
     /// Set the picture source (the bridge's pixel buffer) and repaint.
     pub fn set_frame_source(&mut self, source: Option<SurfaceSource>, cx: &mut Context<Self>) {
-        self.frame_source = source;
+        self.frame_source = source.map(ViewerFrameSource::Surface);
+        cx.notify();
+    }
+
+    /// Set the picture source to a CPU-side frame and repaint.
+    ///
+    /// This is the path for non-macOS platforms and engines that decode to
+    /// raw pixels instead of platform surfaces: hand in a
+    /// [`RenderImage`](gpui::RenderImage) whose bytes are BGRA8 (the same
+    /// format gpui's `img` element uses) and the viewer uploads it through
+    /// the sprite atlas. `None` clears the picture (showing the placeholder).
+    pub fn set_cpu_frame(&mut self, frame: Option<Arc<RenderImage>>, cx: &mut Context<Self>) {
+        self.frame_source = frame.map(ViewerFrameSource::CpuFrame);
         cx.notify();
     }
 
@@ -174,11 +204,15 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 
         if let Some(source) = &self.frame_source {
             let fit = if self.zoom { ObjectFit::Cover } else { ObjectFit::Contain };
-            picture = picture.child(
-                surface(source.clone())
-                    .size_full()
-                    .object_fit(fit),
-            );
+            let picture_element: AnyElement = match source {
+                ViewerFrameSource::Surface(surface_source) => {
+                    surface(surface_source.clone()).size_full().object_fit(fit).into_any()
+                }
+                ViewerFrameSource::CpuFrame(image) => {
+                    img(image.clone()).size_full().object_fit(fit).into_any()
+                }
+            };
+            picture = picture.child(picture_element);
         } else {
             picture = picture.child(
                 div()
@@ -387,6 +421,55 @@ mod tests {
         let frame = Frame(3000);
         let text = format_timecode(frame, FrameRate::new(30, 1), TimeDisplay::Timecode);
         assert_eq!(text, "00:01:40:00");
+    }
+
+    #[gpui::test]
+    async fn cpu_frame_source_renders_without_a_platform_surface(cx: &mut TestAppContext) {
+        // The CPU-frame path (for non-macOS platforms without CVPixelBuffer)
+        // accepts raw BGRA8 bytes in a RenderImage and renders through the
+        // sprite atlas — no SurfaceSource involved.
+        use gpui::RenderImage;
+        use image::{Frame, RgbaImage};
+
+        // A 2x2 opaque red frame, converted RGBA -> BGRA as gpui expects.
+        let mut rgba = RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let frame = Arc::new(RenderImage::new(smallvec::SmallVec::from_elem(
+            Frame::new(rgba),
+            1,
+        )));
+
+        let (cx, host) = make_host(cx);
+        cx.update(|window, app| {
+            host.read(app)
+                .viewer
+                .clone()
+                .update(app, |viewer, cx| viewer.set_cpu_frame(Some(frame), cx));
+            window.draw(app);
+        });
+        cx.run_until_parked();
+
+        let is_cpu = cx.read(|app| {
+            matches!(
+                host.read(app).viewer.read(app).frame_source,
+                Some(ViewerFrameSource::CpuFrame(_))
+            )
+        });
+        assert!(is_cpu, "the frame source should be the CPU-frame variant");
+
+        // Clearing the CPU frame falls back to the placeholder.
+        cx.update(|window, app| {
+            host.read(app)
+                .viewer
+                .clone()
+                .update(app, |viewer, cx| viewer.set_cpu_frame(None, cx));
+            window.draw(app);
+        });
+        cx.run_until_parked();
+        let is_none = cx.read(|app| host.read(app).viewer.read(app).frame_source.is_none());
+        assert!(is_none);
     }
 
     fn make_host(cx: &mut TestAppContext) -> (&'static mut VisualTestContext, Entity<Host>) {

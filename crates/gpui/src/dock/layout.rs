@@ -29,8 +29,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 ///
 /// - `Split.children` has at least two entries and contains no direct
 ///   `Split` child with the same `direction` (such nests are flattened).
-/// - `Split.ratio` is finite and clamped to `(0.0, 1.0)` exclusive; see
-///   [`DockLayout::resize_split`] for clamping against minimum panel sizes.
+/// - `Split.ratios` has exactly one entry per child, each strictly positive,
+///   and the entries sum to `1.0` (they are the fraction of the parent extent
+///   given to each child; see [`DockLayout::resize_split_child`]).
 /// - `Tabs.panels` is non-empty and `Tabs.active < panels.len()`.
 /// - Every [`PanelId`] occurs at most once in the whole tree.
 ///
@@ -43,12 +44,13 @@ pub enum DockNode {
         /// The axis along which children are laid out: [`Axis::Horizontal`]
         /// places children side by side, [`Axis::Vertical`] stacks them.
         direction: Axis,
-        /// Fraction of the available extent (along `direction`) assigned to
-        /// the first child, relative to the remaining children. For two
-        /// children this is simply the first child's share. Adjusted by
-        /// dragging a split handle; see
-        /// [`DockLayout::resize_split`].
-        ratio: f32,
+        /// The fraction of the available extent (along `direction`) assigned
+        /// to each child, in child order. Entries sum to `1.0`, so a split
+        /// with any number of panels can express distinct sizes (e.g.
+        /// `[0.5, 0.3, 0.2]` for three panels) instead of flattening to a
+        /// single shared ratio. Adjusted by dragging a split handle; see
+        /// [`DockLayout::resize_split_child`].
+        ratios: Vec<f32>,
         /// The children, in layout order. Never empty, never a single child,
         /// and never contains a nested `Split` with the same `direction`.
         children: Vec<DockNode>,
@@ -318,14 +320,16 @@ impl DockLayout {
 
         if let DockNode::Split {
             direction,
+            ratios,
             children,
-            ..
         } = &mut root
         {
             if *direction == axis {
                 if before {
+                    split_ratio_at(ratios, 0);
                     children.insert(0, DockNode::Panel(panel));
                 } else {
+                    split_ratio_at(ratios, ratios.len() - 1);
                     children.push(DockNode::Panel(panel));
                 }
                 self.root = Some(root);
@@ -335,7 +339,7 @@ impl DockLayout {
 
         self.root = Some(DockNode::Split {
             direction: axis,
-            ratio: 0.5,
+            ratios: vec![0.5, 0.5],
             children: if before {
                 vec![DockNode::Panel(panel), root]
             } else {
@@ -356,18 +360,22 @@ impl DockLayout {
         let before = matches!(zone, DropZone::Left | DropZone::Top);
 
         // If the target sits inside a split along the same axis, insert the
-        // panel as a sibling rather than nesting a split inside a split.
+        // panel as a sibling rather than nesting a split inside a split. The
+        // new panel splits the target child's share in half, so every child
+        // keeps a distinct, independently resizable ratio.
         let mut parent = path.0.clone();
         if parent.pop().is_some() {
             let parent_path = NodePath(parent);
             if let Some(DockNode::Split {
                 direction,
+                ratios,
                 children,
                 ..
             }) = self.node_at_mut(&parent_path)
             {
                 if *direction == axis {
                     let index = *path.0.last().expect("non-root path has a last index");
+                    split_ratio_at(ratios, index);
                     children.insert(
                         if before { index } else { index + 1 },
                         DockNode::Panel(panel),
@@ -385,7 +393,7 @@ impl DockLayout {
         let new_node = DockNode::Panel(panel);
         let replacement = DockNode::Split {
             direction: axis,
-            ratio: 0.5,
+            ratios: vec![0.5, 0.5],
             children: if before {
                 vec![new_node, old_node]
             } else {
@@ -449,9 +457,32 @@ impl DockLayout {
                 }
                 true
             }
-            DockNode::Split { children, .. } => children
-                .iter_mut()
-                .any(|child| Self::remove_from_node(child, panel)),
+            DockNode::Split {
+                ratios, children, ..
+            } => {
+                for (index, child) in children.iter_mut().enumerate() {
+                    // Only a direct `Panel` leaf (or an emptied node below)
+                    // is dropped from this split; the collapsed child's ratio
+                    // is dropped with it and the rest renormalized so the
+                    // freed space is redistributed proportionally.
+                    let is_direct_leaf = matches!(child, DockNode::Panel(_));
+                    let removed = match child {
+                        DockNode::Panel(id) => *id == panel,
+                        other => Self::remove_from_node(other, panel),
+                    };
+                    if removed {
+                        if is_direct_leaf {
+                            children.remove(index);
+                            if index < ratios.len() {
+                                ratios.remove(index);
+                            }
+                            renormalize_ratios(ratios);
+                        }
+                        return true;
+                    }
+                }
+                false
+            }
         }
     }
 
@@ -479,27 +510,72 @@ impl DockLayout {
         inserted
     }
 
-    /// Sets the `ratio` of the `Split` node at `path`.
+    /// Sets the share of the first child of the `Split` node at `path` and
+    /// redistributes the remaining extent proportionally among the other
+    /// children, keeping the `Split.ratios` sum at `1.0`.
     ///
-    /// `ratio` is clamped so that no child shrinks below its minimum extent
-    /// (see the min-size constants in
-    /// the `split_handle` module); out-of-range values are
-    /// clamped rather than rejected.
+    /// This two-argument form is kept for source compatibility with callers
+    /// that only resize a two-panel split (where "first child's share" and
+    /// "share of the first pair" coincide). For splits with three or more
+    /// children — or when only one boundary should move — use
+    /// [`resize_split_child`](Self::resize_split_child), which adjusts a
+    /// single pair without touching the others.
     ///
     /// # Panics
     ///
     /// Panics if `path` does not address a [`DockNode::Split`].
     pub fn resize_split(&mut self, path: &NodePath, ratio: f32) {
+        let ratio = ratio.clamp(0.05, 0.95);
         let Some(node) = self.node_at_mut(path) else {
             panic!("resize_split: path {path:?} does not address a node");
         };
-        let DockNode::Split { ratio: current, .. } = node else {
+        let DockNode::Split { ratios, .. } = node else {
             panic!("resize_split: path {path:?} does not address a Split node");
         };
-        // Pixel-level minimum extents (see split_handle::MIN_CHILD_EXTENT)
-        // depend on the rendered size and cannot be enforced on a ratio;
-        // clamp to a conservative fraction so both children keep a share.
-        *current = ratio.clamp(0.05, 0.95);
+        let rest: f32 = ratios.iter().skip(1).sum();
+        let Some(first) = ratios.first_mut() else {
+            panic!("resize_split: split at {path:?} has no children");
+        };
+        *first = ratio;
+        if rest > 0.0 {
+            let scale = (1.0 - ratio) / rest;
+            for share in ratios.iter_mut().skip(1) {
+                *share *= scale;
+            }
+        }
+    }
+
+    /// Sets the share of child `index` within its pair (children `index` and
+    /// `index + 1`) of the `Split` node at `path`.
+    ///
+    /// `ratio` is the fraction of the pair's combined extent given to child
+    /// `index` (so `0.5` makes the pair even); the two children's entries are
+    /// rewritten proportionally and the rest of the split is untouched, so
+    /// each panel keeps its own distinct ratio even when the split has three
+    /// or more children. `ratio` is clamped to `[0.05, 0.95]` so neither
+    /// child can be squeezed out entirely; pixel-level minimum extents (see
+    /// the min-size constants in `split_handle`) are enforced by the caller.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `path` does not address a [`DockNode::Split`], or if
+    /// `index` is not a boundary between two children.
+    pub fn resize_split_child(&mut self, path: &NodePath, index: usize, ratio: f32) {
+        let Some(node) = self.node_at_mut(path) else {
+            panic!("resize_split: path {path:?} does not address a node");
+        };
+        let DockNode::Split { ratios, .. } = node else {
+            panic!("resize_split: path {path:?} does not address a Split node");
+        };
+        assert!(
+            index + 1 < ratios.len(),
+            "resize_split_child: boundary {index} out of range for a split with {} children",
+            ratios.len(),
+        );
+        let ratio = ratio.clamp(0.05, 0.95);
+        let pair = ratios[index] + ratios[index + 1];
+        ratios[index] = ratio * pair;
+        ratios[index + 1] = (1.0 - ratio) * pair;
     }
 
     /// Re-establishes the [`DockNode`] invariants after structural edits.
@@ -529,37 +605,50 @@ impl DockLayout {
             }
             DockNode::Split {
                 direction,
-                ratio,
+                mut ratios,
                 children,
             } => {
-                let children: Vec<DockNode> = children
-                    .into_iter()
-                    .filter_map(Self::cleanup_node)
-                    .collect();
-                // Flatten direct same-direction split nests.
-                let mut flat = Vec::with_capacity(children.len());
-                for child in children {
+                let mut clean_children = Vec::new();
+                let mut clean_ratios = Vec::new();
+                for (index, child) in children.into_iter().enumerate() {
+                    // A child that collapsed away (empty tabs, removed leaf)
+                    // frees its share; the rest are renormalized below.
+                    let Some(child) = Self::cleanup_node(child) else {
+                        continue;
+                    };
+                    let child_share = ratios.get(index).copied().unwrap_or(0.5);
                     match child {
                         DockNode::Split {
                             direction: nested_direction,
+                            ratios: nested_ratios,
                             children: nested_children,
-                            ..
-                        } if nested_direction == direction => flat.extend(nested_children),
-                        other => flat.push(other),
+                        } if nested_direction == direction => {
+                            // Flatten direct same-direction split nests,
+                            // scaling the nested ratios by this child's share
+                            // so the relative proportions are preserved.
+                            for (nested_child, nested_ratio) in
+                                nested_children.into_iter().zip(nested_ratios)
+                            {
+                                clean_children.push(nested_child);
+                                clean_ratios.push(child_share * nested_ratio);
+                            }
+                        }
+                        other => {
+                            clean_children.push(other);
+                            clean_ratios.push(child_share);
+                        }
                     }
                 }
-                let ratio = if ratio.is_finite() {
-                    ratio.clamp(0.05, 0.95)
-                } else {
-                    0.5
-                };
-                match flat.len() {
+                // Re-establish the "sum to 1" invariant: drops collapsed
+                // children's freed space proportionally and absorbs drift.
+                renormalize_ratios(&mut clean_ratios);
+                match clean_children.len() {
                     0 => None,
-                    1 => Some(flat.pop().expect("len == 1")),
+                    1 => Some(clean_children.pop().expect("len == 1")),
                     _ => Some(DockNode::Split {
                         direction,
-                        ratio,
-                        children: flat,
+                        ratios: clean_ratios,
+                        children: clean_children,
                     }),
                 }
             }
@@ -587,11 +676,11 @@ impl DockLayout {
         }
     }
 
-    /// Returns the `ratio` of the `Split` node at `path`, or `None` if `path`
-    /// does not address a split.
-    pub fn split_ratio(&self, path: &NodePath) -> Option<f32> {
+    /// Returns the per-child ratios of the `Split` node at `path`, or `None`
+    /// if `path` does not address a split. The entries sum to `1.0`.
+    pub fn split_ratios(&self, path: &NodePath) -> Option<Vec<f32>> {
         match self.node_at(path) {
-            Some(DockNode::Split { ratio, .. }) => Some(*ratio),
+            Some(DockNode::Split { ratios, .. }) => Some(ratios.clone()),
             _ => None,
         }
     }
@@ -745,8 +834,8 @@ enum SerializedNode {
     Split {
         /// See [`DockNode::Split::direction`].
         direction: Axis,
-        /// See [`DockNode::Split::ratio`].
-        ratio: f32,
+        /// See [`DockNode::Split::ratios`].
+        ratios: Vec<f32>,
         /// See [`DockNode::Split::children`].
         children: Vec<SerializedNode>,
     },
@@ -764,7 +853,11 @@ enum SerializedNode {
 impl DockLayoutState {
     /// The snapshot format version written by
     /// [`capture`](DockLayoutState::capture).
-    pub const VERSION: u32 = 1;
+    ///
+    /// v2: `Split` nodes store a per-child `ratios` vector instead of the
+    /// single `ratio` of v1. Snapshots written with v1 cannot be read by a
+    /// v2 reader; reject stale versions before restoring.
+    pub const VERSION: u32 = 2;
 
     /// Snapshots `layout`, translating panel ids to string keys via
     /// `registry`.
@@ -811,7 +904,7 @@ impl DockLayoutState {
             }
             DockNode::Split {
                 direction,
-                ratio,
+                ratios,
                 children,
             } => {
                 let children: Vec<SerializedNode> = children
@@ -823,7 +916,7 @@ impl DockLayoutState {
                     1 => children.into_iter().next(),
                     _ => Some(SerializedNode::Split {
                         direction: *direction,
-                        ratio: *ratio,
+                        ratios: ratios.clone(),
                         children,
                     }),
                 }
@@ -860,7 +953,7 @@ impl DockLayoutState {
             }
             SerializedNode::Split {
                 direction,
-                ratio,
+                ratios,
                 children,
             } => {
                 let children: Vec<DockNode> = children
@@ -870,11 +963,19 @@ impl DockLayoutState {
                 match children.len() {
                     0 => None,
                     1 => children.into_iter().next(),
-                    _ => Some(DockNode::Split {
-                        direction: *direction,
-                        ratio: *ratio,
-                        children,
-                    }),
+                    _ => {
+                        // Evenly sized by default; `cleanup` (run by the
+                        // caller) renormalizes and reconciles lengths.
+                        let mut ratios = ratios.clone();
+                        if ratios.len() != children.len() {
+                            ratios = vec![1.0 / children.len() as f32; children.len()];
+                        }
+                        Some(DockNode::Split {
+                            direction: *direction,
+                            ratios,
+                            children,
+                        })
+                    }
                 }
             }
         }
@@ -915,4 +1016,188 @@ pub(crate) fn interim_id(key: &str) -> PanelId {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
     PanelId::new(hasher.finish())
+}
+
+/// Splits the share of child `index` in half and inserts the new child's
+/// share right next to it (at position `index`), keeping the sum at `1.0`.
+///
+/// Used when a panel becomes a sibling of an existing child in a same-axis
+/// split: the newcomer takes half of the target child's extent, and the
+/// target keeps the other half.
+fn split_ratio_at(ratios: &mut Vec<f32>, index: usize) {
+    let half = ratios[index] / 2.0;
+    ratios[index] = half;
+    ratios.insert(index, half);
+}
+
+/// Normalizes `ratios` to sum to `1.0`, so freed shares (from removed or
+/// collapsed children) are redistributed proportionally and float drift is
+/// absorbed. No-op for an empty or all-zero vector.
+fn renormalize_ratios(ratios: &mut Vec<f32>) {
+    let sum: f32 = ratios.iter().sum();
+    if sum > 0.0 {
+        for ratio in ratios.iter_mut() {
+            *ratio /= sum;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Axis;
+
+    fn panel(id: u64) -> DockNode {
+        DockNode::Panel(PanelId::new(id))
+    }
+
+    /// Builds `[a] → [a | b] → [a | b | c]` all on one axis, exercising the
+    /// sibling-insert path that used to flatten to a single shared ratio.
+    fn three_panel_horizontal_layout() -> DockLayout {
+        let mut layout = DockLayout::new();
+        assert!(layout.insert_panel(PanelId::new(1), None));
+        assert!(layout.insert_panel(
+            PanelId::new(2),
+            Some(DropTarget { panel: Some(PanelId::new(1)), zone: DropZone::Right })
+        ));
+        assert!(layout.insert_panel(
+            PanelId::new(3),
+            Some(DropTarget { panel: Some(PanelId::new(2)), zone: DropZone::Right })
+        ));
+        layout
+    }
+
+    #[test]
+    fn three_panels_on_one_axis_keep_distinct_ratios() {
+        let layout = three_panel_horizontal_layout();
+        let root = layout.root().unwrap();
+        let DockNode::Split { direction, ratios, children } = root else {
+            panic!("expected a single split at the root");
+        };
+        assert_eq!(*direction, Axis::Horizontal);
+        assert_eq!(children.len(), 3);
+        // Inserting c to the right of b halves b's share: [1/2, 1/4, 1/4].
+        assert_eq!(ratios, &vec![0.5, 0.25, 0.25]);
+        let sum: f32 = ratios.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "ratios must sum to 1, got {sum}");
+    }
+
+    #[test]
+    fn resize_split_child_adjusts_only_the_target_pair() {
+        let mut layout = three_panel_horizontal_layout();
+        let path = NodePath::default();
+        // Give the second panel 2/3 of its pair with the third:
+        // pair = [0.25, 0.25] → scaled so the second panel holds 2/3.
+        layout.resize_split_child(&path, 1, 2.0 / 3.0);
+        let ratios = layout.split_ratios(&path).unwrap();
+        // The first panel's share is untouched.
+        assert!((ratios[0] - 0.5).abs() < 1e-6);
+        assert!((ratios[1] - 1.0 / 3.0).abs() < 1e-6);
+        assert!((ratios[2] - 1.0 / 6.0).abs() < 1e-6);
+        let sum: f32 = ratios.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resize_split_is_source_compatible_and_affects_first_child() {
+        let mut layout = three_panel_horizontal_layout();
+        // The old two-argument form gives the first child its share of the
+        // whole and redistributes the rest proportionally: [1/2, 1/4, 1/4]
+        // with ratio 0.7 → [0.7, 0.15, 0.15].
+        layout.resize_split(&NodePath::default(), 0.7);
+        let ratios = layout.split_ratios(&NodePath::default()).unwrap();
+        assert!((ratios[0] - 0.7).abs() < 1e-6);
+        assert!((ratios[1] - 0.15).abs() < 1e-6);
+        assert!((ratios[2] - 0.15).abs() < 1e-6);
+    }
+
+    #[test]
+    fn remove_panel_renormalizes_remaining_ratios() {
+        let mut layout = three_panel_horizontal_layout();
+        // [1/2, 1/4, 1/4] → remove panel 2 → [1/2, 1/4] renormalized to [2/3, 1/3].
+        assert!(layout.remove_panel(PanelId::new(2)));
+        let root = layout.root().unwrap();
+        let DockNode::Split { ratios, children, .. } = root else {
+            panic!("expected a split after removal");
+        };
+        assert_eq!(children.len(), 2);
+        assert!((ratios[0] - 2.0 / 3.0).abs() < 1e-6);
+        assert!((ratios[1] - 1.0 / 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cleanup_flattens_same_axis_nest_and_scales_ratios() {
+        // Hand-construct a same-axis nest: root [a | inner], where inner is
+        // itself a horizontal split [b | c] with ratios [3/4, 1/4].
+        let mut layout = DockLayout::new();
+        layout.root = Some(DockNode::Split {
+            direction: Axis::Horizontal,
+            ratios: vec![0.5, 0.5],
+            children: vec![
+                panel(1),
+                DockNode::Split {
+                    direction: Axis::Horizontal,
+                    ratios: vec![0.75, 0.25],
+                    children: vec![panel(2), panel(3)],
+                },
+            ],
+        });
+        layout.cleanup();
+        let root = layout.root().unwrap();
+        let DockNode::Split { ratios, children, .. } = root else {
+            panic!("expected a flattened split at the root");
+        };
+        assert_eq!(children.len(), 3);
+        // Inner ratios scaled by the inner node's share: [0.5, 0.375, 0.125].
+        assert!((ratios[0] - 0.5).abs() < 1e-6);
+        assert!((ratios[1] - 0.375).abs() < 1e-6);
+        assert!((ratios[2] - 0.125).abs() < 1e-6);
+    }
+
+    #[test]
+    fn layout_state_round_trips_distinct_ratios() {
+        let mut layout = three_panel_horizontal_layout();
+        layout.resize_split_child(&NodePath::default(), 1, 0.8);
+        let registry = TestRegistry;
+        let state = DockLayoutState::capture(&layout, &registry);
+        assert_eq!(state.version, DockLayoutState::VERSION);
+        let restored = state.to_layout();
+        // Panel ids are re-derived from registry keys on restore, so compare
+        // the tree *shape* (direction, ratios, structure) rather than ids.
+        let DockNode::Split {
+            direction,
+            ratios,
+            children,
+        } = restored.root().unwrap()
+        else {
+            panic!("expected a split at the restored root");
+        };
+        assert_eq!(*direction, Axis::Horizontal);
+        let original_ratios = layout.split_ratios(&NodePath::default()).unwrap();
+        assert_eq!(ratios, &original_ratios);
+        assert_eq!(children.len(), 3);
+    }
+
+    #[test]
+    fn insert_before_splits_the_target_child() {
+        let mut layout = three_panel_horizontal_layout();
+        // [1/2, 1/4, 1/4]; inserting d to the LEFT of panel 2 halves panel 2's
+        // share and puts d in front of it.
+        assert!(layout.insert_panel(
+            PanelId::new(4),
+            Some(DropTarget { panel: Some(PanelId::new(2)), zone: DropZone::Left })
+        ));
+        let ratios = layout.split_ratios(&NodePath::default()).unwrap();
+        assert_eq!(ratios, vec![0.5, 0.125, 0.125, 0.25]);
+    }
+
+    struct TestRegistry;
+    impl PanelRegistry for TestRegistry {
+        fn panel_key(&self, id: PanelId) -> Option<String> {
+            Some(format!("panel-{}", id.raw()))
+        }
+        fn build_panel(&self, _key: &str, _window: &mut Window, _cx: &mut App) -> Option<PanelHandle> {
+            None
+        }
+    }
 }

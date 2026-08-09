@@ -19,6 +19,8 @@ thiserror.workspace = true
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
+image.workspace = true
+smallvec.workspace = true
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 core-video.workspace = true

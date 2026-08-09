@@ -121,6 +121,21 @@ impl MenuBar {
         self.open.is_some()
     }
 
+    /// Sets the checked state of the menu item with `id` across all entries
+    /// (searching submenus recursively), so a host can toggle a checkmark at
+    /// runtime without rebuilding the [`MenuBar`].
+    ///
+    /// The checkmark appears on the next repaint (the renderer reads
+    /// `checked` per frame); pair with a `cx.notify()` after the call.
+    /// Returns whether an item with that id was found.
+    pub fn set_item_checked(&mut self, id: usize, checked: bool) -> bool {
+        let mut found = false;
+        for entry in &mut self.entries {
+            found |= entry.menu.set_item_checked(id, checked);
+        }
+        found
+    }
+
     fn open_menu(&mut self, index: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
         if self.open != Some(index) {
             self.open = Some(index);
@@ -744,5 +759,31 @@ mod tests {
             host.read(app).events.iter().any(|e| matches!(e, MenuBarEvent::MenuClosed { .. }))
         });
         assert!(closed);
+    }
+
+    #[gpui::test]
+    async fn runtime_set_item_checked_flips_the_checkmark(cx: &mut TestAppContext) {
+        let (cx, host) = make_bar(cx);
+        // Toggle item 11 ("Save") at runtime, by id.
+        let changed = cx.update(|_window, app| {
+            let bar = host.read(app).menu_bar.clone();
+            bar.update(app, |bar, _cx| bar.set_item_checked(11, true))
+        });
+        assert!(changed, "item 11 exists and should be updated");
+        let checked = cx.update(|_window, app| {
+            host.read(app).menu_bar.read(app).entries[0].menu.items[1].checked
+        });
+        assert_eq!(checked, Some(true));
+
+        // Unknown ids are reported as not found and change nothing.
+        let changed = cx.update(|_window, app| {
+            let bar = host.read(app).menu_bar.clone();
+            bar.update(app, |bar, _cx| bar.set_item_checked(12345, true))
+        });
+        assert!(!changed);
+        let checked = cx.update(|_window, app| {
+            host.read(app).menu_bar.read(app).entries[0].menu.items[0].checked
+        });
+        assert_eq!(checked, None);
     }
 }

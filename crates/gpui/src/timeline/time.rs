@@ -192,14 +192,21 @@ impl FrameRange {
 /// How time should be presented to the user in rulers and inspectors.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimeDisplay {
-    /// `HH:MM:SS:FF` timecode. This is the default and the standard in
-    /// professional video editing.
+    /// `HH:MM:SS:FF` non-drop-frame timecode, the standard for integer frame
+    /// rates (24, 25, 30, 50, 60) and the fallback for NTSC rates when
+    /// wall-clock alignment is not required.
     ///
-    /// Drop-frame timecode (`;` separator, frame-number skipping for NTSC
-    /// rates) is **not implemented yet**; [`format_timecode`] currently
-    /// always produces non-drop-frame timecode. See its documentation.
+    /// This is the default and the professional-video standard for integer
+    /// rates.
     #[default]
     Timecode,
+    /// `HH:MM:SS;FF` SMPTE drop-frame timecode for NTSC-derived rates
+    /// (29.97, 23.976, 59.94, 119.88): frame numbers `00`/`01` (or `00`..`03`
+    /// at 59.94/119.88) are skipped at the start of every minute except the
+    /// tenth, keeping the timecode in lockstep with wall-clock time. For
+    /// non-NTSC rates [`format_timecode`] falls back to non-drop-frame
+    /// output. See [`format_timecode`] for the exact algorithm.
+    TimecodeDropFrame,
     /// A plain frame counter, e.g. `1048576`.
     Frames,
     /// Seconds with millisecond precision, e.g. `83.708`.
@@ -257,18 +264,35 @@ pub fn seconds_to_frame(rate: FrameRate, seconds: f64) -> Frame {
 /// * [`TimeDisplay::Timecode`] — non-drop-frame `HH:MM:SS:FF`. The frame
 ///   component width derives from the frame rate (two digits for rates below
 ///   100 fps).
+/// * [`TimeDisplay::TimecodeDropFrame`] — SMPTE drop-frame `HH:MM:SS;FF`
+///   (semicolon separator). See below.
 ///
 /// # Drop-frame timecode
 ///
-/// Drop-frame timecode (the `HH:MM:SS;FF` convention used with NTSC rates so
-/// that timecode stays in lockstep with wall-clock time) is **future work**.
-/// Calling this with [`TimeDisplay::Timecode`] and an NTSC rate such as
-/// [`FrameRate::NTSC_2997`] currently yields non-drop-frame timecode, which
-/// drifts from wall-clock time by about 3.6 seconds per hour. Callers that
-/// need broadcast-correct labels must not rely on this function yet.
+/// NTSC-derived rates (29.97, 23.976, 59.94, 119.88 — any rate whose
+/// [`FrameRate`] denominator is `1001`) run slightly slower than their
+/// nominal integer rate, so non-drop-frame timecode drifts from wall-clock
+/// time (≈3.6 s/hour at 29.97). Drop-frame timecode compensates by skipping
+/// frame numbers at the start of every minute except the tenth — two frames
+/// (`00`, `01`) per skipped minute at 29.97/23.976, four at 59.94, eight at
+/// 119.88 — so the label stays within a frame of wall-clock time.
+///
+/// The conversion is the classic SMPTE algorithm:
+///
+/// 1. Split the real frame count into whole 10-minute blocks (`d`) and a
+///    remainder (`m`). Each full block contributes `drop * 9` skipped frames
+///    (every minute of the block except the tenth).
+/// 2. Within the remainder, each complete minute contributes `drop` skipped
+///    frames.
+/// 3. Add the total skipped count to the real frame count, then format the
+///    result at the nominal rate with `;` before the frame component.
+///
+/// Rates with a denominator other than `1001` have no drop-frame convention;
+/// [`TimeDisplay::TimecodeDropFrame`] then falls back to non-drop-frame
+/// output (the two variants produce identical strings).
 ///
 /// Negative frames are formatted with a leading `-` applied to the whole
-/// timecode (e.g. `-00:00:01:12`).
+/// timecode (e.g. `-00:00:01;12`).
 ///
 /// # Examples
 ///
@@ -281,6 +305,11 @@ pub fn seconds_to_frame(rate: FrameRate, seconds: f64) -> Frame {
 ///     "01:01:01:12",
 /// );
 /// assert_eq!(format_timecode(Frame(42), rate, TimeDisplay::Frames), "42");
+///
+/// // NTSC 29.97: frame 1800 is just past the first minute boundary, where
+/// // frames 00 and 01 of the minute are skipped.
+/// let ntsc = FrameRate::NTSC_2997;
+/// assert_eq!(format_timecode(Frame(1800), ntsc, TimeDisplay::TimecodeDropFrame), "00:01:00;02");
 /// ```
 pub fn format_timecode(frame: Frame, rate: FrameRate, display: TimeDisplay) -> String {
     match display {
@@ -307,7 +336,62 @@ pub fn format_timecode(frame: Frame, rate: FrameRate, display: TimeDisplay) -> S
                 frames
             )
         }
+        TimeDisplay::TimecodeDropFrame => {
+            if rate.den != 1001 {
+                // There is no drop-frame convention outside NTSC-derived
+                // rates; fall back to the ordinary non-drop string (including
+                // its `:` separator) so the two variants agree.
+                return format_timecode(frame, rate, TimeDisplay::Timecode);
+            }
+            let negative = frame.0 < 0;
+            let n = frame.0.unsigned_abs();
+            let (nominal, adjusted) = drop_frame_adjust(n, rate);
+            let mut n = adjusted;
+            let frames = n % nominal;
+            n /= nominal;
+            let seconds = n % 60;
+            n /= 60;
+            let minutes = n % 60;
+            let hours = n / 60;
+            format!(
+                "{}{:02}:{:02}:{:02};{:02}",
+                if negative { "-" } else { "" },
+                hours,
+                minutes,
+                seconds,
+                frames
+            )
+        }
     }
+}
+
+/// Applies the SMPTE drop-frame adjustment to a real frame count at an
+/// NTSC-derived rate.
+///
+/// Returns `(nominal_fps, adjusted_count)`, where `adjusted_count` is the
+/// timecode frame count with the skipped frame numbers re-inserted.
+fn drop_frame_adjust(frame: u64, rate: FrameRate) -> (u64, u64) {
+    debug_assert!(
+        rate.den == 1001,
+        "drop-frame adjustment is only defined for NTSC-derived rates (denominator 1001)"
+    );
+    let nominal = rate.as_f64().round() as u64;
+
+    // Skipped frame numbers per non-10th minute: two per 30 fps of nominal
+    // rate (2 at 29.97/23.976, 4 at 59.94, 8 at 119.88).
+    let drop = ((nominal as f64) * 2.0 / 30.0).round() as u64;
+    // Real frame counts per minute and per 10 minutes at this rate.
+    let frames_per_10_min = (rate.as_f64() * 600.0).round() as u64;
+    let frames_per_min = (rate.as_f64() * 60.0).round() as u64;
+
+    let ten_minute_blocks = frame / frames_per_10_min;
+    let within_block = frame % frames_per_10_min;
+
+    let mut adjusted = frame + drop * 9 * ten_minute_blocks;
+    if within_block > drop {
+        adjusted += drop * ((within_block - drop) / frames_per_min);
+    }
+    (nominal, adjusted)
 }
 
 /// What produced a [`SnapPoint`]. Used by the UI to pick an indicator style
@@ -444,6 +528,82 @@ mod tests {
         let rate = FrameRate::NTSC_2997;
         let frame = seconds_to_frame(rate, 10.0);
         assert!((frame_to_seconds(frame, rate) - 10.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn drop_frame_timecode_skips_minute_boundary_frames() {
+        let rate = FrameRate::NTSC_2997;
+        let tc = |frame| format_timecode(Frame(frame), rate, TimeDisplay::TimecodeDropFrame);
+        // Within the first minute nothing is dropped.
+        assert_eq!(tc(0), "00:00:00;00");
+        assert_eq!(tc(30), "00:00:01;00");
+        assert_eq!(tc(1798), "00:00:59;28");
+        assert_eq!(tc(1799), "00:00:59;29");
+        // Frame 1800 is just past the first minute boundary; frames 00 and 01
+        // of that minute are skipped, so the label jumps to ...;02.
+        assert_eq!(tc(1800), "00:01:00;02");
+    }
+
+    #[test]
+    fn drop_frame_timecode_preserves_tenth_minute() {
+        let rate = FrameRate::NTSC_2997;
+        let tc = |frame| format_timecode(Frame(frame), rate, TimeDisplay::TimecodeDropFrame);
+        // 10 minutes of real time at 29.97 is 17982 frames; no frames are
+        // dropped at the start of the tenth minute.
+        assert_eq!(tc(17982), "00:10:00;00");
+        assert_eq!(tc(17984), "00:10:00;02");
+        // 20 minutes: two 10-minute blocks.
+        assert_eq!(tc(17982 * 2), "00:20:00;00");
+    }
+
+    #[test]
+    fn drop_frame_timecode_aligns_with_wall_clock_at_one_hour() {
+        // One real hour at 29.97 = 107892 frames; drop-frame timecode reads
+        // exactly 01:00:00;00 (non-drop would read 01:00:02;12, the ~3.6s/h
+        // drift the convention exists to cancel).
+        let rate = FrameRate::NTSC_2997;
+        assert_eq!(
+            format_timecode(Frame(107892), rate, TimeDisplay::TimecodeDropFrame),
+            "01:00:00;00"
+        );
+    }
+
+    #[test]
+    fn drop_frame_timecode_at_59_94_drops_four_frames() {
+        let rate = FrameRate::new(60000, 1001);
+        let tc = |frame| format_timecode(Frame(frame), rate, TimeDisplay::TimecodeDropFrame);
+        assert_eq!(tc(0), "00:00:00;00");
+        // Real frames per minute at 59.94: round(3596.4) = 3596. Just past
+        // the first minute the four skipped numbers (00..03) are visible.
+        assert_eq!(tc(3596), "00:00:59;56");
+        assert_eq!(tc(3600), "00:01:00;04");
+        // One real hour at 59.94 = round(59.94 * 3600) = 215784 frames.
+        assert_eq!(tc(215784), "01:00:00;00");
+    }
+
+    #[test]
+    fn drop_frame_timecode_falls_back_for_non_ntsc_rates() {
+        // 24 fps is not NTSC-derived (denominator 1): drop-frame output must
+        // be identical to non-drop output.
+        let rate = FrameRate::new(24, 1);
+        let frame = Frame(24 * 3600 + 24 * 60 + 24 + 12);
+        assert_eq!(
+            format_timecode(frame, rate, TimeDisplay::TimecodeDropFrame),
+            format_timecode(frame, rate, TimeDisplay::Timecode),
+        );
+        assert_eq!(
+            format_timecode(frame, rate, TimeDisplay::TimecodeDropFrame),
+            "01:01:01:12",
+        );
+    }
+
+    #[test]
+    fn drop_frame_timecode_handles_negative_frames() {
+        let rate = FrameRate::NTSC_2997;
+        assert_eq!(
+            format_timecode(Frame(-1800), rate, TimeDisplay::TimecodeDropFrame),
+            "-00:01:00;02",
+        );
     }
 
     #[test]

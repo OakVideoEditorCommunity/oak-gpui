@@ -110,10 +110,12 @@ pub struct DockArea {
     /// path. Re-created when the tree changes shape and pruned each render.
     /// The subscription keeps the strip's events routed back to this view.
     tab_bars: HashMap<NodePath, (Entity<TabBar>, Subscription)>,
-    /// One split-handle entity per `Split` node, keyed by the node's current
-    /// path. Holds transient drag state (`SplitHandle::drag_origin`) across
-    /// frames; pruned with the tab bars each render.
-    split_handles: HashMap<NodePath, (Entity<SplitHandle>, Subscription)>,
+    /// One split-handle entity per boundary of each `Split` node, keyed by
+    /// the node's current path and the boundary index. Holds transient drag
+    /// state (`SplitHandle::drag_origin`) across frames; pruned with the tab
+    /// bars each render. A split with N children keeps N-1 handles so every
+    /// pair of panels can be resized independently.
+    split_handles: HashMap<(NodePath, usize), (Entity<SplitHandle>, Subscription)>,
 }
 
 impl DockArea {
@@ -655,60 +657,84 @@ impl DockArea {
     }
 
     /// Gets (creating and subscribing on first use) the split-handle entity
-    /// for the `Split` node at `path`.
+    /// for the boundary at `index` of the `Split` node at `path`.
     fn split_handle_for(
         &mut self,
         path: &NodePath,
+        index: usize,
         direction: Axis,
         cx: &mut Context<Self>,
     ) -> Entity<SplitHandle> {
-        if let Some((handle, _)) = self.split_handles.get(path) {
+        if let Some((handle, _)) = self.split_handles.get(&(path.clone(), index)) {
             return handle.clone();
         }
-        let handle = cx.new(|_cx| SplitHandle::new(direction, path.clone()));
+        let handle = cx.new(|_cx| SplitHandle::new(direction, path.clone(), index));
         let subscription = cx.subscribe(&handle, |this, _handle, event: &SplitHandleEvent, cx| {
             match event {
-                SplitHandleEvent::ResizeRequested { path, ratio } => {
-                    this.layout.resize_split(path, *ratio);
+                SplitHandleEvent::ResizeRequested { path, index, ratio } => {
+                    this.layout.resize_split_child(path, *index, *ratio);
                     this.emit_layout_changed(cx);
                 }
-                SplitHandleEvent::ResetRequested { path } => {
-                    this.layout.resize_split(path, SplitHandle::RESET_RATIO);
+                SplitHandleEvent::ResetRequested { path, index } => {
+                    this.layout.resize_split_child(path, *index, SplitHandle::RESET_RATIO);
                     this.emit_layout_changed(cx);
                 }
             }
         });
-        self.split_handles.insert(path.clone(), (handle.clone(), subscription));
+        self.split_handles
+            .insert((path.clone(), index), (handle.clone(), subscription));
         handle
     }
 
-    /// Routes a split-handle drag to the handle entity for `path`.
+    /// Routes a split-handle drag to the handle entity for the boundary at
+    /// `index` of the split at `path`.
     fn route_split_drag(
         &mut self,
         path: &NodePath,
+        index: usize,
         direction: Axis,
         event: &DragMoveEvent<SplitHandleDrag>,
         cx: &mut Context<Self>,
     ) {
-        let Some((handle, _)) = self.split_handles.get(path) else {
+        let Some((handle, _)) = self.split_handles.get(&(path.clone(), index)) else {
             return;
         };
-        let start_ratio = self.layout.split_ratio(path).unwrap_or(SplitHandle::RESET_RATIO);
-        let extent = match direction {
+        // The handle drag works on the pair's own extent: start_ratio is the
+        // index child's share of the pair, and the drag delta is a fraction
+        // of the pair's combined on-screen extent.
+        let ratios = self.layout.split_ratios(path).unwrap_or_default();
+        let total: f32 = ratios.iter().sum();
+        let pair_total = ratios.get(index).copied().unwrap_or(0.0)
+            + ratios.get(index + 1).copied().unwrap_or(0.0);
+        let start_ratio = if pair_total > 0.0 {
+            ratios[index] / pair_total
+        } else {
+            SplitHandle::RESET_RATIO
+        };
+        let full_extent = match direction {
             Axis::Horizontal => event.bounds.size.width,
             Axis::Vertical => event.bounds.size.height,
         };
+        let pair_extent = full_extent * pair_total / total.max(1.0);
         let position = match direction {
             Axis::Horizontal => event.event.position.x,
             Axis::Vertical => event.event.position.y,
         };
         let handle = handle.clone();
-        handle.update(cx, |handle, cx| handle.drag_to(position, extent, start_ratio, cx));
+        handle.update(cx, |handle, cx| {
+            handle.drag_to(position, pair_extent, start_ratio, cx)
+        });
     }
 
-    /// Ends a split-handle drag on the handle entity for `path`.
-    fn end_split_drag(&mut self, path: &NodePath, _drag: &SplitHandleDrag, cx: &mut Context<Self>) {
-        if let Some((handle, _)) = self.split_handles.get(path) {
+    /// Ends a split-handle drag on the handle entity for the boundary at
+    /// `index` of the split at `path`.
+    fn end_split_drag(
+        &mut self,
+        path: &NodePath,
+        drag: &SplitHandleDrag,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((handle, _)) = self.split_handles.get(&(path.clone(), drag.index)) {
             let handle = handle.clone();
             handle.update(cx, |handle, _cx| handle.end_drag());
         }
@@ -759,7 +785,7 @@ impl DockArea {
         match node {
             DockNode::Split {
                 direction,
-                ratio,
+                ratios,
                 children,
             } => {
                 let direction = *direction;
@@ -770,8 +796,10 @@ impl DockArea {
                     .id(ElementId::named_usize("dock-split", path_key(path)))
                     .on_drag_move::<SplitHandleDrag>(
                         cx.listener(move |this, event: &DragMoveEvent<SplitHandleDrag>, _window, cx| {
-                            let path = event.drag(cx).path.clone();
-                            this.route_split_drag(&path, direction, event, cx);
+                            let drag = event.drag(cx);
+                            let path = drag.path.clone();
+                            let index = drag.index;
+                            this.route_split_drag(&path, index, direction, event, cx);
                         }),
                     )
                     .on_drop::<SplitHandleDrag>(
@@ -791,19 +819,22 @@ impl DockArea {
                     let mut child_path = path.clone();
                     child_path.0.push(index);
                     let child = self.render_node(child, &child_path, cx);
-                    // The first child is sized by the split's ratio; the rest
-                    // share the remainder equally.
-                    let child = if index == 0 {
-                        child
-                            .flex_basis(relative(*ratio))
-                            .flex_grow_0()
-                            .flex_shrink_0()
-                    } else {
-                        child.flex_1()
-                    };
+                    // Each child is sized by its own ratio (the entries sum to
+                    // 1.0), so a split with three or more panels keeps
+                    // distinct sizes instead of flattening to one ratio.
+                    let share = ratios
+                        .get(index)
+                        .copied()
+                        .unwrap_or(1.0 / children.len() as f32);
+                    let child = child
+                        .flex_basis(relative(share))
+                        .flex_grow_0()
+                        .flex_shrink_0();
                     container = container.child(child);
-                    if index == 0 && children.len() > 1 {
-                        let handle = self.split_handle_for(path, direction, cx);
+                    // One handle per boundary, so every pair of panels can be
+                    // resized independently.
+                    if index + 1 < children.len() {
+                        let handle = self.split_handle_for(path, index, direction, cx);
                         container = container.child(handle);
                     }
                 }
@@ -910,7 +941,8 @@ impl Render for DockArea {
         let mut live: HashSet<NodePath> = HashSet::new();
         self.collect_paths(&self.layout, &NodePath::default(), &mut live);
         self.tab_bars.retain(|path, _| live.contains(path));
-        self.split_handles.retain(|path, _| live.contains(path));
+        self.split_handles
+            .retain(|(path, _), _| live.contains(path));
 
         if let Some(indicator) = self.render_drop_indicator(window, cx) {
             root = root.child(indicator);

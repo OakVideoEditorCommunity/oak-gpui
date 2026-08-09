@@ -54,6 +54,25 @@ impl MenuItem {
         self
     }
 
+    /// Set the checked state of an already-built item (runtime mutation).
+    ///
+    /// Unlike the construction-only [`with_checked`](Self::with_checked), this
+    /// lets a host flip a menu checkmark after the [`Menu`] has been handed
+    /// to a view — e.g. through [`Menu::set_item_checked`] on the menu held
+    /// by a [`MenuBar`](super::MenuBar) — without rebuilding the menu. The
+    /// renderers read `checked` on every frame, so the change shows up on the
+    /// next repaint.
+    pub fn set_checked(&mut self, checked: bool) -> &mut Self {
+        self.checked = Some(checked);
+        self
+    }
+
+    /// Remove the checkmark from an already-built item (runtime mutation).
+    pub fn clear_checked(&mut self) -> &mut Self {
+        self.checked = None;
+        self
+    }
+
     /// Attach a submenu.
     pub fn with_submenu(mut self, submenu: Menu) -> Self {
         self.submenu = Some(Box::new(submenu));
@@ -83,6 +102,28 @@ impl Menu {
     /// Whether the item at `index` is a visual separator (an empty item).
     pub fn is_separator(item: &MenuItem) -> bool {
         item.label.is_empty()
+    }
+
+    /// Sets the checked state of the item with `id`, searching top-level
+    /// items and their submenus recursively. Returns whether an item with
+    /// that id was found and updated.
+    ///
+    /// Runtime counterpart to [`MenuItem::with_checked`]: hosts that hold a
+    /// live [`Menu`] (e.g. in a [`MenuBar`](super::MenuBar)) can toggle a
+    /// checkmark without rebuilding the menu.
+    pub fn set_item_checked(&mut self, id: usize, checked: bool) -> bool {
+        for item in &mut self.items {
+            if item.id == id {
+                item.set_checked(checked);
+                return true;
+            }
+            if let Some(submenu) = item.submenu.as_mut() {
+                if submenu.set_item_checked(id, checked) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// The next selectable index from `current`, moving `delta` steps
@@ -156,6 +197,34 @@ mod tests {
         let menu = sample_menu();
         assert_eq!(menu.items[0].checked, None);
         assert_eq!(menu.items[4].checked, Some(true));
+    }
+
+    #[test]
+    fn set_item_checked_mutates_in_place() {
+        let mut menu = sample_menu();
+        // Runtime toggle on a built item, found by id.
+        assert!(menu.set_item_checked(5, false));
+        assert_eq!(menu.items[4].checked, Some(false));
+        assert!(menu.set_item_checked(5, true));
+        assert_eq!(menu.items[4].checked, Some(true));
+        // Clear the checkmark entirely.
+        assert!(menu.items[4].clear_checked().checked.is_none());
+        // Unknown ids report failure and change nothing.
+        assert!(!menu.set_item_checked(999, true));
+        assert_eq!(menu.items[0].checked, None);
+    }
+
+    #[test]
+    fn set_item_checked_reaches_nested_submenus() {
+        let sub = Menu::new(vec![MenuItem::new(10, "A"), MenuItem::new(11, "B")]);
+        let mut menu = Menu::new(vec![
+            MenuItem::new(5, "Nested").with_submenu(sub),
+            MenuItem::new(6, "Top"),
+        ]);
+        assert!(menu.set_item_checked(11, true));
+        assert_eq!(menu.items[0].submenu.as_ref().unwrap().items[1].checked, Some(true));
+        // The top-level item is untouched.
+        assert_eq!(menu.items[1].checked, None);
     }
 
     #[test]

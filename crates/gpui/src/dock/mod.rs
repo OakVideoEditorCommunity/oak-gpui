@@ -10,10 +10,11 @@
 //! The layout of a [`DockArea`](crate::dock::DockArea) is an immutable-by-convention tree of
 //! [`DockNode`](crate::dock::DockNode)s:
 //!
-//! - `Split { direction, ratio, children }` — a row or column of child nodes,
-//!   sized proportionally. `ratio` is the fraction of the cross axis given to
-//!   the first child; with more than two children it is the fraction given to
-//!   the first child relative to the rest. See [`DockLayout::resize_split`](crate::dock::DockLayout::resize_split).
+//! - `Split { direction, ratios, children }` — a row or column of child nodes,
+//!   sized proportionally. `ratios` gives each child its own share of the
+//!   extent (the entries sum to 1), so a split with any number of panels can
+//!   keep distinct sizes; each boundary is resized independently by dragging
+//!   its handle. See [`DockLayout::resize_split_child`](crate::dock::DockLayout::resize_split_child).
 //! - `Tabs { panels, active }` — a tab group showing one panel at a time,
 //!   with a tab strip (the internal `tab_bar` component) for switching,
 //!   closing, and reordering.

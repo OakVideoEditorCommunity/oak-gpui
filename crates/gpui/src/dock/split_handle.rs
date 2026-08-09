@@ -18,19 +18,24 @@ use super::{NodePath, path_key};
 /// Events emitted by a [`SplitHandle`] toward its owning [`DockArea`].
 #[derive(Clone, Debug)]
 pub(crate) enum SplitHandleEvent {
-    /// The user dragged the handle; the split at `path` should be resized to
-    /// `ratio`.
+    /// The user dragged the handle; the boundary at `index` of the split at
+    /// `path` should be resized to `ratio` (child `index`'s share of the
+    /// pair, already clamped to the allowed range).
     ResizeRequested {
         /// Path of the split node to resize.
         path: NodePath,
+        /// The boundary being moved: between children `index` and `index + 1`.
+        index: usize,
         /// Desired new ratio, already clamped to the allowed range.
         ratio: f32,
     },
-    /// The user double-clicked the handle; the split at `path` should be
-    /// reset to [`SplitHandle::RESET_RATIO`].
+    /// The user double-clicked the handle; the boundary at `index` of the
+    /// split at `path` should be reset to [`SplitHandle::RESET_RATIO`].
     ResetRequested {
-        /// Path of the split node to reset.
+        /// Path of the split node to resize.
         path: NodePath,
+        /// The boundary being moved: between children `index` and `index + 1`.
+        index: usize,
     },
 }
 
@@ -40,6 +45,8 @@ pub(crate) enum SplitHandleEvent {
 pub(crate) struct SplitHandleDrag {
     /// Path of the split being resized.
     pub(crate) path: NodePath,
+    /// The boundary being dragged: between children `index` and `index + 1`.
+    pub(crate) index: usize,
 }
 
 /// A resize handle between two children of a split node.
@@ -53,14 +60,18 @@ pub(crate) struct SplitHandleDrag {
 ///   parent extent → fraction) and emits
 ///   [`SplitHandleEvent::ResizeRequested`]; the owning
 ///   [`DockArea`](crate::dock::DockArea) applies it via
-///   [`DockLayout::resize_split`], clamping so neither side shrinks below
+///   [`DockLayout::resize_split_child`](crate::dock::DockLayout::resize_split_child),
+///   clamping so neither side shrinks below
 ///   [`SplitHandle::MIN_CHILD_EXTENT`].
 /// - Double-clicking emits [`SplitHandleEvent::ResetRequested`] to reset the
-///   split to an even 50/50.
+///   boundary to an even 50/50.
 ///
-/// The handle carries the [`NodePath`] of its split so it can address the
-/// correct node after unrelated edits elsewhere in the tree; paths are
-/// re-derived on every render, never stored across frames.
+/// A split with N children renders N-1 handles (one per boundary), so each
+/// pair of panels can be resized independently while the others keep their
+/// ratios. The handle carries the [`NodePath`] of its split and the boundary
+/// `index` so it can address the correct node after unrelated edits elsewhere
+/// in the tree; paths are re-derived on every render, never stored across
+/// frames.
 pub(crate) struct SplitHandle {
     /// Axis along which the parent split lays out its children; the handle
     /// itself extends along the perpendicular axis.
@@ -68,6 +79,8 @@ pub(crate) struct SplitHandle {
     /// Path of the split node this handle resizes, valid for the current
     /// frame only.
     path: NodePath,
+    /// Boundary this handle moves: between children `index` and `index + 1`.
+    index: usize,
     /// Pointer position where the current drag started, if dragging.
     drag_origin: Option<Pixels>,
 }
@@ -86,11 +99,12 @@ impl SplitHandle {
     /// The ratio a double-click resets to (even split).
     pub(crate) const RESET_RATIO: f32 = 0.5;
 
-    /// Creates a handle for the split at `path`.
-    pub(crate) fn new(direction: Axis, path: NodePath) -> Self {
+    /// Creates a handle for the boundary at `index` of the split at `path`.
+    pub(crate) fn new(direction: Axis, path: NodePath, index: usize) -> Self {
         Self {
             direction,
             path,
+            index,
             drag_origin: None,
         }
     }
@@ -101,33 +115,35 @@ impl SplitHandle {
     }
 
     /// Applies an in-progress drag: converts the pointer delta to a ratio
-    /// delta relative to the parent extent and emits a
+    /// delta relative to the pair extent and emits a
     /// [`SplitHandleEvent::ResizeRequested`].
     ///
-    /// `start_ratio` is the split's ratio at drag start, re-read from the
-    /// layout by the owning dock area on every move so external edits during
-    /// the drag are respected.
+    /// `start_ratio` is the share of the `index` child within its pair at
+    /// drag start, re-read from the layout by the owning dock area on every
+    /// move so external edits during the drag are respected; `pair_extent` is
+    /// the combined on-screen extent of the two children, in pixels.
     pub(crate) fn drag_to(
         &mut self,
         position: Pixels,
-        parent_extent: Pixels,
+        pair_extent: Pixels,
         start_ratio: f32,
         cx: &mut Context<Self>,
     ) {
         let Some(origin) = self.drag_origin else {
             return;
         };
-        if parent_extent.0 <= 0.0 {
+        if pair_extent.0 <= 0.0 {
             return;
         }
         // Keep both children above MIN_CHILD_EXTENT, but never clamp harder
-        // than a quarter of the parent so tiny parents stay resizable.
-        let min_ratio = (Self::MIN_CHILD_EXTENT.0 / parent_extent.0).min(0.25);
+        // than a quarter of the pair so tiny parents stay resizable.
+        let min_ratio = (Self::MIN_CHILD_EXTENT.0 / pair_extent.0).min(0.25);
         let max_ratio = 1.0 - min_ratio;
-        let ratio = (start_ratio + (position.0 - origin.0) / parent_extent.0)
+        let ratio = (start_ratio + (position.0 - origin.0) / pair_extent.0)
             .clamp(min_ratio, max_ratio);
         cx.emit(SplitHandleEvent::ResizeRequested {
             path: self.path.clone(),
+            index: self.index,
             ratio,
         });
         cx.notify();
@@ -142,6 +158,7 @@ impl SplitHandle {
     pub(crate) fn reset(&mut self, cx: &mut Context<Self>) {
         cx.emit(SplitHandleEvent::ResetRequested {
             path: self.path.clone(),
+            index: self.index,
         });
         cx.notify();
     }
@@ -201,6 +218,7 @@ impl Render for SplitHandle {
         root.on_drag(
             SplitHandleDrag {
                 path: self.path.clone(),
+                index: self.index,
             },
             ghost_ctor,
         )

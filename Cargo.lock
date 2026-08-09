@@ -2766,6 +2766,8 @@ dependencies = [
  "gpui",
  "gpui_elements",
  "gpui_platform",
+ "image",
+ "smallvec",
  "thiserror 2.0.19",
 ]
 
