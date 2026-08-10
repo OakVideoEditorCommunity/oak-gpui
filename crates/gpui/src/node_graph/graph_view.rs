@@ -11,7 +11,7 @@ use crate::{
     App, BorderStyle, Bounds, Context, Corners, Edges, Entity, EventEmitter, FocusHandle,
     Focusable, Hsla, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, PaintQuad, PinchEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent,
-    Window, canvas, colors::DefaultColors, div, fill, hsla, point, prelude::*, px, size,
+    Size, Window, canvas, colors::DefaultColors, div, fill, hsla, point, prelude::*, px, size,
 };
 
 use crate::node_graph::{
@@ -286,6 +286,13 @@ impl<D: NodeGraphDataSource + 'static> NodeGraphView<D> {
     /// Returns the current viewport/selection state.
     pub fn state(&self) -> &GraphViewState {
         &self.state
+    }
+
+    /// Returns the size of the canvas the graph was last painted into, or a
+    /// zero size before the first frame. Hosts use this to fit the viewport
+    /// to the graph (see [`GraphViewState::fit_to_rect`]).
+    pub fn viewport_size(&self) -> Size<Pixels> {
+        self.viewport.size
     }
 
     /// Returns a mutable reference to the viewport/selection state, e.g. to

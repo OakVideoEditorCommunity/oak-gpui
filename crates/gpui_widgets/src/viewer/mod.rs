@@ -221,7 +221,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
                     .items_center()
                     .justify_center()
                     .text_color(colors.disabled)
-                    .child("No frame source"),
+                    .child(crate::i18n::tr("viewer.no_frame_source", "No frame source")),
             );
         }
 
@@ -326,7 +326,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
             )
             .child(button(
                 "gpui-widgets-viewer-safe",
-                "安全框",
+                crate::i18n::tr("viewer.safe_frames", "安全框"),
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.show_safe_frames = !this.show_safe_frames;
                     this.emit(
@@ -337,7 +337,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
             ))
             .child(button(
                 "gpui-widgets-viewer-zoom",
-                "缩放",
+                crate::i18n::tr("viewer.zoom", "缩放"),
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.zoom = !this.zoom;
                     this.emit(ViewerEvent::ToggleZoomRequested { control: this.control }, cx);
@@ -351,7 +351,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 /// A small labeled button.
 fn button(
     id: &'static str,
-    label: &'static str,
+    label: impl IntoElement,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()

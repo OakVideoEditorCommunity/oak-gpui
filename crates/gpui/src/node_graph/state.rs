@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::{Pixels, Point, point};
+use crate::{Bounds, Pixels, Point, Size, point};
 
 use crate::node_graph::NodeId;
 
@@ -130,6 +130,33 @@ impl GraphViewState {
         self.zoom = new_zoom;
     }
 
+    /// Fits the graph-space rectangle `rect` (typically the union of every
+    /// node's bounds) into the `viewport` screen-space size: zooms so the
+    /// rect occupies at most 95% of the viewport (clamped to
+    /// [`MIN_ZOOM`]..=[`MAX_ZOOM`]) and pans so the rect is centered.
+    ///
+    /// No-op when either size is non-positive. Used by hosts for a "fit
+    /// window" command and as the initial viewport after the first layout.
+    pub fn fit_to_rect(&mut self, rect: Bounds<Pixels>, viewport: Size<Pixels>) {
+        const PADDING: f32 = 40.0;
+        let (rw, rh) = (rect.size.width.0, rect.size.height.0);
+        let (vw, vh) = (viewport.width.0, viewport.height.0);
+        if rw <= 0.0 || rh <= 0.0 || vw <= 0.0 || vh <= 0.0 {
+            return;
+        }
+        // Fit the larger axis; the padding keeps a breathing margin.
+        let zoom = (vw / (rw + PADDING * 2.0))
+            .min(vh / (rh + PADDING * 2.0))
+            .clamp(MIN_ZOOM, MAX_ZOOM);
+        // Center the rect: offset = (viewport - rect_size * zoom) / 2
+        //                       - rect_origin * zoom.
+        self.zoom = zoom;
+        self.offset = point(
+            Pixels((vw - rw * zoom) * 0.5 - rect.origin.x.0 * zoom),
+            Pixels((vh - rh * zoom) * 0.5 - rect.origin.y.0 * zoom),
+        );
+    }
+
     /// Maps a graph-space (document) point to screen space:
     /// `screen = graph * zoom + offset`.
     pub fn graph_to_screen(&self, graph: Point<Pixels>) -> Point<Pixels> {
@@ -241,5 +268,65 @@ impl SelectionRect {
         let min = point(self.anchor.x.min(self.current.x), self.anchor.y.min(self.current.y));
         let max = point(self.anchor.x.max(self.current.x), self.anchor.y.max(self.current.y));
         (min, max)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{px, size};
+
+    /// Fitting a graph rect into a viewport centers it and picks a zoom that
+    /// fits the larger axis; the mapping must stay consistent afterwards.
+    #[test]
+    fn fit_centers_and_fits_the_rect() {
+        let mut state = GraphViewState::new();
+        let rect = Bounds::new(point(px(40.0), px(60.0)), size(px(1040.0), px(230.0)));
+        state.fit_to_rect(rect, size(px(640.0), px(500.0)));
+
+        // The rect's center must map to the viewport's center.
+        let graph_center = rect.center();
+        let screen_center = state.graph_to_screen(graph_center);
+        assert!((screen_center.x.0 - 320.0).abs() < 0.5, "x center: {}", screen_center.x.0);
+        assert!((screen_center.y.0 - 250.0).abs() < 0.5, "y center: {}", screen_center.y.0);
+
+        // The fitted rect must fit within the viewport (with the 40px padding).
+        let top_left = state.graph_to_screen(rect.origin);
+        let bottom_right = state.graph_to_screen(rect.bottom_right());
+        assert!(top_left.x.0 >= 0.0 && bottom_right.x.0 <= 640.0);
+        assert!(top_left.y.0 >= 0.0 && bottom_right.y.0 <= 500.0);
+    }
+
+    /// The width and height both shrink when the rect is tall and wide
+    /// (whichever axis is more constraining drives the zoom).
+    #[test]
+    fn fit_respects_both_axes() {
+        let mut state = GraphViewState::new();
+        // A wide rect in a narrow viewport: width drives the zoom.
+        let rect = Bounds::new(point(px(0.0), px(0.0)), size(px(2000.0), px(100.0)));
+        state.fit_to_rect(rect, size(px(400.0), px(400.0)));
+        let fitted = state.graph_to_screen(rect.bottom_right());
+        assert!(fitted.x.0 <= 400.0 && fitted.y.0 <= 400.0);
+        assert!(state.zoom() < 1.0);
+    }
+
+    /// A rect smaller than the viewport zooms in (clamped to [`MAX_ZOOM`]).
+    #[test]
+    fn fit_zooms_in_for_small_graphs() {
+        let mut state = GraphViewState::new();
+        let rect = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(60.0)));
+        state.fit_to_rect(rect, size(px(1000.0), px(800.0)));
+        assert_eq!(state.zoom(), MAX_ZOOM);
+    }
+
+    /// Non-positive viewport or rect sizes are ignored.
+    #[test]
+    fn fit_ignores_non_positive_sizes() {
+        let mut state = GraphViewState::new();
+        let before = state.clone();
+        let rect = Bounds::new(point(px(0.0), px(0.0)), size(px(100.0), px(60.0)));
+        state.fit_to_rect(rect, size(px(0.0), px(800.0)));
+        assert_eq!(state.zoom(), before.zoom());
+        assert_eq!(state.offset(), before.offset());
     }
 }

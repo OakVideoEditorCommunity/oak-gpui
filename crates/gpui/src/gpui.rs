@@ -22,6 +22,8 @@ pub mod colors;
 pub mod dock;
 /// Linear effect-stack inspector widget (companion to [`node_graph`]).
 pub mod effect_stack;
+/// Minimal localization hook for widget-baked strings.
+pub mod i18n;
 mod element;
 mod elements;
 mod executor;

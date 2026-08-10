@@ -406,7 +406,7 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
                     .justify_center()
                     .text_sm()
                     .text_color(colors.disabled)
-                    .child("No selection"),
+                    .child(crate::i18n::tr("effect_stack.empty", "No selection")),
             );
         };
 
@@ -576,7 +576,7 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
             .py_2()
             .text_sm()
             .text_color(colors.text)
-            .child("+ Add Effect")
+            .child(crate::i18n::tr("effect_stack.add", "+ Add Effect"))
             .on_click(cx.listener(move |this, _event, _window, cx| this.add(cx)));
 
         root.child(column).child(add_button)

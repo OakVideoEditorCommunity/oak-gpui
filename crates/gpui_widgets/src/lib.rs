@@ -23,6 +23,7 @@ pub mod color;
 pub mod combo_box;
 pub mod curve_editor;
 pub mod dialog;
+pub mod i18n;
 pub mod keyable;
 pub mod menu;
 pub mod project_explorer;
