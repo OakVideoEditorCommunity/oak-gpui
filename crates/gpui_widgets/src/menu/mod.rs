@@ -168,13 +168,7 @@ impl MenuBar {
             .and_then(|index| self.entries.get(*index))
             .and_then(|entry| entry.menu.items.iter().find(|i| i.id == item))
             .map(|i| i.label.clone())
-            .or_else(|| {
-                self.entries
-                    .iter()
-                    .flat_map(|e| &e.menu.items)
-                    .find(|i| i.id == item)
-                    .map(|i| i.label.clone())
-            })
+            .or_else(|| self.find_label(item))
             .unwrap_or_default();
         cx.emit(MenuBarEvent::Triggered {
             control: self.control,
@@ -182,6 +176,24 @@ impl MenuBar {
             label,
         });
         self.close_menu(cx);
+    }
+
+    /// The label of an item with `id` anywhere in the open menu, including
+    /// nested submenus (the fallback when the item is not a top-level row).
+    fn find_label(&self, item: usize) -> Option<SharedString> {
+        let index = self.open?;
+        fn search(menu: &Menu, item: usize) -> Option<SharedString> {
+            menu.items
+                .iter()
+                .find_map(|i| {
+                    if i.id == item {
+                        Some(i.label.clone())
+                    } else {
+                        i.submenu.as_deref().and_then(|sub| search(sub, item))
+                    }
+                })
+        }
+        search(&self.entries[index].menu, item)
     }
 
     fn navigate(&mut self, delta: i32, cx: &mut Context<Self>) {
@@ -261,15 +273,22 @@ impl Render for MenuBar {
                 self.control,
                 &entry.menu,
                 hovered,
+                "menu-popup",
                 &colors,
                 cx.listener(|this, item: &MenuClicked, _window, cx| {
                     this.trigger(item.id, cx);
                 }),
                 cx.listener(|this, item: &MenuHovered, _window, cx| {
-                    if item.submenu {
-                        this.submenu = Some(item.index);
-                        cx.notify();
-                    }
+                    // Mouse hover drives both the row highlight and the
+                    // submenu: remember the hovered row so the render pass
+                    // can open the nested menu next to it.
+                    this.hovered = Some(item.index);
+                    this.submenu = if item.submenu {
+                        Some(item.index)
+                    } else {
+                        None
+                    };
+                    cx.notify();
                 }),
             )
             .track_focus(&self.focus_handle)
@@ -319,6 +338,7 @@ impl Render for MenuBar {
                     self.control + 1000,
                     &submenu,
                     sub_hovered,
+                    "menu-submenu-popup",
                     &colors,
                     cx.listener(|this, clicked: &MenuClicked, _window, cx| {
                         this.trigger(clicked.id, cx);
@@ -326,12 +346,15 @@ impl Render for MenuBar {
                     cx.listener(|_this, _item: &MenuHovered, _window, _cx| {}),
                 );
                 let width = f32::from(menu_width_estimate());
+                // Align the submenu with the hovered row (one row height per
+                // item) so it opens next to the item, not the first row.
+                let top = ROW_HEIGHT * (hovered as f32 + 1.0);
                 bar = bar.child(
                     deferred(
                         anchored()
                             .position(self.popup_position)
                             .anchor(Anchor::TopLeft)
-                            .offset(point(px(width + 2.0), px(ROW_HEIGHT)))
+                            .offset(point(px(width + 2.0), px(top)))
                             .snap_to_window_with_margin(px(8.0))
                             .child(sub_popup),
                     )
@@ -412,6 +435,7 @@ impl Render for ContextMenu {
                 0,
                 &menu,
                 hovered,
+                "menu-popup",
                 &colors,
                 cx.listener(|this, clicked: &MenuClicked, _window, cx| {
                     cx.emit(ContextMenuEvent {
@@ -484,11 +508,13 @@ struct MenuHovered {
 }
 
 /// Build a menu popup list. `on_click` receives the clicked item, `on_hover`
-/// receives hovered-item info (used to open submenus).
+/// receives hovered-item info (used to open submenus). `debug_key` is the
+/// test selector registered for the popup's bounds.
 fn menu_popup_element(
     control: usize,
     menu: &Menu,
     hovered: Option<usize>,
+    debug_key: &'static str,
     colors: &gpui::colors::Colors,
     on_click: impl Fn(&MenuClicked, &mut Window, &mut App) + 'static,
     on_hover: impl Fn(&MenuHovered, &mut Window, &mut App) + 'static,
@@ -498,7 +524,7 @@ fn menu_popup_element(
     let on_hover = Arc::new(on_hover);
     let mut column = div()
         .id(ElementId::named_usize("gpui-widgets-menu-popup", control))
-        .debug_selector(|| "menu-popup".into())
+        .debug_selector(move || debug_key.into())
         .min_w(px(180.0))
         .rounded_md()
         .border_1()
@@ -637,6 +663,22 @@ mod tests {
         )]
     }
 
+    /// An entry whose first item carries a nested submenu (like the app's
+    /// 视图 → 语言 / 主题).
+    fn demo_entries_with_submenu() -> Vec<MenuBarEntry> {
+        let sub = Menu::new(vec![
+            MenuItem::new(21, "简体中文"),
+            MenuItem::new(22, "English"),
+        ]);
+        vec![MenuBarEntry::new(
+            "View",
+            Menu::new(vec![
+                MenuItem::new(20, "Language").with_submenu(sub),
+                MenuItem::new(23, "Preferences…"),
+            ]),
+        )]
+    }
+
     struct Host {
         menu_bar: Entity<MenuBar>,
         events: Vec<MenuBarEvent>,
@@ -648,9 +690,16 @@ mod tests {
     }
 
     fn make_bar(cx: &mut TestAppContext) -> (&'static mut VisualTestContext, Entity<Host>) {
+        make_bar_with(cx, demo_entries())
+    }
+
+    fn make_bar_with(
+        cx: &mut TestAppContext,
+        entries: Vec<MenuBarEntry>,
+    ) -> (&'static mut VisualTestContext, Entity<Host>) {
         cx.update(|cx| cx.init_colors());
         let window = cx.open_window(size(px(400.0), px(120.0)), |window, cx| {
-            let menu_bar = cx.new(|cx| MenuBar::new(1, demo_entries(), window, cx));
+            let menu_bar = cx.new(|cx| MenuBar::new(1, entries, window, cx));
             let host = Host {
                 menu_bar,
                 events: Vec::new(),
@@ -785,5 +834,54 @@ mod tests {
             host.read(app).menu_bar.read(app).entries[0].menu.items[0].checked
         });
         assert_eq!(checked, None);
+    }
+
+    /// Hovering a menu item that carries a nested menu must open the second
+    /// level to the right of the popup (the app's 视图 → 语言 / 主题 flow).
+    #[gpui::test]
+    async fn hovering_a_submenu_item_opens_the_submenu(cx: &mut TestAppContext) {
+        let (cx, host) = make_bar_with(cx, demo_entries_with_submenu());
+        // Click the "View" title to open the menu.
+        cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        let popup = cx
+            .debug_bounds("menu-popup")
+            .expect("menu popup rendered");
+        // Hover the first row ("Language", which has the submenu).
+        cx.simulate_mouse_move(
+            point(popup.left() + px(40.0), popup.top() + px(13.0)),
+            None,
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+
+        let submenu = cx
+            .debug_bounds("menu-submenu-popup")
+            .expect("submenu popup opens next to the hovered item");
+        assert!(
+            submenu.left() > popup.left(),
+            "the submenu opens to the right of the parent popup"
+        );
+
+        // Clicking a submenu row triggers it (and closes the menus).
+        cx.simulate_click(
+            point(submenu.left() + px(40.0), submenu.top() + px(13.0)),
+            Modifiers::none(),
+        );
+        cx.run_until_parked();
+        let triggered = cx.read(|app| {
+            host.read(app).events.iter().any(|e| {
+                matches!(e, MenuBarEvent::Triggered { item: 21, .. })
+            })
+        });
+        assert!(triggered, "expected Triggered for the submenu item");
+        assert!(cx.debug_bounds("menu-popup").is_none(), "menu closed after triggering");
     }
 }

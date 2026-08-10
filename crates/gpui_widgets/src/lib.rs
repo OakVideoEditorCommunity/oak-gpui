@@ -24,6 +24,7 @@ pub mod combo_box;
 pub mod curve_editor;
 pub mod dialog;
 pub mod i18n;
+pub mod icons;
 pub mod keyable;
 pub mod menu;
 pub mod project_explorer;
@@ -32,6 +33,7 @@ pub mod scopes;
 pub mod slider;
 pub mod spinbox;
 pub mod theme;
+pub mod tooltip;
 pub mod value;
 pub mod viewer;
 

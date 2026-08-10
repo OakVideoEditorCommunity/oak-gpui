@@ -15,10 +15,12 @@ pub use transport::*;
 use gpui::timeline::{FrameRate, TimeDisplay, format_timecode};
 use gpui::{
     AnyElement, App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, ObjectFit, Render, RenderImage, SurfaceSource, Window, colors::DefaultColors, div,
-    img, prelude::*, px, surface,
+    Focusable, ObjectFit, Render, RenderImage, SharedString, SurfaceSource, Window, colors::DefaultColors,
+    div, img, prelude::*, px, surface,
 };
 use std::sync::Arc;
+
+use crate::{icons, tooltip::tooltip_view};
 
 /// A request emitted by the viewer.
 #[derive(Debug, Clone, PartialEq)]
@@ -246,26 +248,37 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
             );
         }
 
-        // Transport bar.
+        // Transport bar. The transport controls are icon buttons (16px icon
+        // on a 24px hit target, localized tooltips); without a registered
+        // icon resolver the buttons fall back to the glyph labels below.
         let playing = self.transport.playing;
         let play_label = if playing { "⏸" } else { "▶" };
+        let in_icon = icons::path("prev", cx);
+        let step_back_icon = icons::path("rew", cx);
+        let play_icon = icons::path(if playing { "pause" } else { "play" }, cx);
+        let step_forward_icon = icons::path("ff", cx);
+        let out_icon = icons::path("next", cx);
         let transport_bar = div()
             .flex()
             .items_center()
-            .gap_1()
+            .gap_2()
             .px_2()
             .py_1()
             .bg(colors.container)
-            .child(button(
+            .child(transport_button(
                 "gpui-widgets-viewer-in",
+                in_icon,
                 "⏮",
+                crate::i18n::tr("viewer.in_point", "入点"),
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.emit(ViewerEvent::InPointRequested { control: this.control }, cx);
                 }),
             ))
-            .child(button(
+            .child(transport_button(
                 "gpui-widgets-viewer-step-back",
+                step_back_icon,
                 "⏪",
+                crate::i18n::tr("viewer.step_back", "上一帧"),
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.emit(
                         ViewerEvent::StepRequested {
@@ -276,9 +289,15 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
                     );
                 }),
             ))
-            .child(button(
+            .child(transport_button(
                 "gpui-widgets-viewer-play",
+                play_icon,
                 play_label,
+                if playing {
+                    crate::i18n::tr("viewer.pause", "暂停")
+                } else {
+                    crate::i18n::tr("viewer.play", "播放")
+                },
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     let event = if this.transport.playing {
                         ViewerEvent::PauseRequested { control: this.control }
@@ -288,9 +307,11 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
                     this.emit(event, cx);
                 }),
             ))
-            .child(button(
+            .child(transport_button(
                 "gpui-widgets-viewer-step-forward",
+                step_forward_icon,
                 "⏩",
+                crate::i18n::tr("viewer.step_forward", "下一帧"),
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.emit(
                         ViewerEvent::StepRequested {
@@ -301,16 +322,20 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
                     );
                 }),
             ))
-            .child(button(
+            .child(transport_button(
                 "gpui-widgets-viewer-out",
+                out_icon,
                 "⏭",
+                crate::i18n::tr("viewer.out_point", "出点"),
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.emit(ViewerEvent::OutPointRequested { control: this.control }, cx);
                 }),
             ))
-            .child(button(
+            .child(transport_button(
                 "gpui-widgets-viewer-clear-range",
-                "✕",
+                None,
+                x_glyph(colors.text),
+                crate::i18n::tr("viewer.clear_range", "清除入出点"),
                 cx.listener(|this, _event: &ClickEvent, _window, cx| {
                     this.emit(ViewerEvent::ClearRangeRequested { control: this.control }, cx);
                 }),
@@ -346,6 +371,67 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 
         div().size_full().flex().flex_col().child(picture).child(transport_bar)
     }
+}
+
+/// A transport icon button: a 16px icon on a 24px hit target with a
+/// localized tooltip. Falls back to the `fallback` glyph when `icon` is
+/// `None` (no resolver registered, or no file for the name).
+fn transport_button(
+    id: &'static str,
+    icon: Option<std::path::PathBuf>,
+    fallback: impl IntoElement,
+    tooltip: SharedString,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let mut el = div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .w(px(24.0))
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .cursor_pointer()
+        .hover(|style| style.bg(gpui::colors::Colors::dark().selected))
+        .tooltip(move |window, cx| tooltip_view(tooltip.clone(), window, cx))
+        .on_click(on_click);
+    if let Some(path) = icon {
+        el = el.child(img(path).w(px(16.0)).h(px(16.0)));
+    } else {
+        el = el.child(fallback);
+    }
+    el
+}
+
+/// A small painted ✕ (clear-range / close), drawn with a canvas so it stays
+/// crisp and theme-colored instead of relying on a font glyph that may
+/// rasterize faintly or not at all.
+fn x_glyph(color: gpui::Rgba) -> impl IntoElement {
+    use gpui::{canvas, point, px, Bounds, PathBuilder, Pixels};
+
+    canvas(
+        move |_bounds, _window, _cx| (),
+        move |bounds: Bounds<Pixels>, (), window, cx| {
+            let _ = cx;
+            // Two diagonal strokes across the 16px box, with a small inset so
+            // the mark reads as a clean X.
+            let inset = px(4.0);
+            for stroke in [true, false] {
+                let mut path = PathBuilder::stroke(px(1.5));
+                let (x0, x1) = if stroke {
+                    (bounds.left() + inset, bounds.right() - inset)
+                } else {
+                    (bounds.right() - inset, bounds.left() + inset)
+                };
+                path.move_to(point(x0, bounds.top() + inset));
+                path.line_to(point(x1, bounds.bottom() - inset));
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, color);
+                }
+            }
+        },
+    )
 }
 
 /// A small labeled button.
