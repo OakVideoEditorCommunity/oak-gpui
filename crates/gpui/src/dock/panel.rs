@@ -8,8 +8,8 @@
 //! needs without downcasting.
 
 use crate::{
-    AnyElement, AnyView, App, Context, Entity, EventEmitter, Render, SharedString, Subscription,
-    Window,
+	AnyElement, AnyView, App, Context, Entity, EventEmitter, Render, SharedString, Subscription,
+	Window,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -31,25 +31,25 @@ use std::fmt;
 pub struct PanelId(u64);
 
 impl PanelId {
-    /// Creates a panel id from a raw numeric value.
-    ///
-    /// The value only needs to be unique within the owning
-    /// [`DockArea`](crate::dock::DockArea)(crate::dock::DockArea); a simple per-application counter
-    /// (or a hash of a stable name) is sufficient.
-    pub const fn new(raw: u64) -> Self {
-        Self(raw)
-    }
+	/// Creates a panel id from a raw numeric value.
+	///
+	/// The value only needs to be unique within the owning
+	/// [`DockArea`](crate::dock::DockArea)(crate::dock::DockArea); a simple per-application counter
+	/// (or a hash of a stable name) is sufficient.
+	pub const fn new(raw: u64) -> Self {
+		Self(raw)
+	}
 
-    /// Returns the raw numeric value backing this id.
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
+	/// Returns the raw numeric value backing this id.
+	pub const fn raw(self) -> u64 {
+		self.0
+	}
 }
 
 impl fmt::Display for PanelId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "panel-{}", self.0)
-    }
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "panel-{}", self.0)
+	}
 }
 
 /// Events a dock panel can emit to its containing [`DockArea`](crate::dock::DockArea)(crate::dock::DockArea).
@@ -60,24 +60,24 @@ impl fmt::Display for PanelId {
 /// flow — without the panel needing a direct reference to the dock.
 #[derive(Clone, Debug)]
 pub enum PanelEvent {
-    /// The panel asked to be closed (e.g. its own close affordance was
-    /// invoked).
-    ///
-    /// The dock area does not remove the panel unconditionally: it first
-    /// consults [`DockPanel::should_close`], then calls [`DockPanel::on_close`]
-    /// and removes the panel only if closing was confirmed.
-    CloseRequested,
-    /// The panel's content gained keyboard focus.
-    ///
-    /// The dock area uses this to keep its own `focused_panel` bookkeeping in
-    /// sync and to emit
-    /// [`DockEvent::PanelFocused`](crate::dock::DockEvent::PanelFocused).
-    Focused,
-    /// The panel's title changed; the tab strip should re-render the label.
-    ///
-    /// The new title is read back through [`DockPanel::title`] rather than
-    /// carried in the event, so panels never have to clone it.
-    TitleChanged,
+	/// The panel asked to be closed (e.g. its own close affordance was
+	/// invoked).
+	///
+	/// The dock area does not remove the panel unconditionally: it first
+	/// consults [`DockPanel::should_close`], then calls [`DockPanel::on_close`]
+	/// and removes the panel only if closing was confirmed.
+	CloseRequested,
+	/// The panel's content gained keyboard focus.
+	///
+	/// The dock area uses this to keep its own `focused_panel` bookkeeping in
+	/// sync and to emit
+	/// [`DockEvent::PanelFocused`](crate::dock::DockEvent::PanelFocused).
+	Focused,
+	/// The panel's title changed; the tab strip should re-render the label.
+	///
+	/// The new title is read back through [`DockPanel::title`] rather than
+	/// carried in the event, so panels never have to clone it.
+	TitleChanged,
 }
 
 /// A view that can live inside a [`DockArea`](crate::dock::DockArea)(crate::dock::DockArea).
@@ -120,56 +120,56 @@ pub enum PanelEvent {
 /// }
 /// ```
 pub trait DockPanel: Render + EventEmitter<PanelEvent> + 'static {
-    /// Returns the stable id of this panel.
-    ///
-    /// Must return the same value for the whole lifetime of the view and must
-    /// be unique among all panels added to one dock area.
-    fn panel_id(&self) -> PanelId;
+	/// Returns the stable id of this panel.
+	///
+	/// Must return the same value for the whole lifetime of the view and must
+	/// be unique among all panels added to one dock area.
+	fn panel_id(&self) -> PanelId;
 
-    /// Returns the plain-text title shown in the tab strip and, where
-    /// relevant, in window titles for floated panels.
-    ///
-    /// Called on every render of the containing tab bar, so it should be
-    /// cheap. Emit [`PanelEvent::TitleChanged`] after changing whatever state
-    /// feeds this.
-    fn title(&self, cx: &App) -> SharedString;
+	/// Returns the plain-text title shown in the tab strip and, where
+	/// relevant, in window titles for floated panels.
+	///
+	/// Called on every render of the containing tab bar, so it should be
+	/// cheap. Emit [`PanelEvent::TitleChanged`] after changing whatever state
+	/// feeds this.
+	fn title(&self, cx: &App) -> SharedString;
 
-    /// Returns the element rendered inside this panel's tab.
-    ///
-    /// The default tab bar renders [`title`](DockPanel::title) when this is
-    /// not customized, but panels may return richer content (icon, dirty
-    /// indicator, close-on-middle-click affordances). The returned element
-    /// must not handle close or drag interactions itself — the tab strip
-    /// overlays those.
-    fn tab_content(&self, cx: &App) -> AnyElement;
+	/// Returns the element rendered inside this panel's tab.
+	///
+	/// The default tab bar renders [`title`](DockPanel::title) when this is
+	/// not customized, but panels may return richer content (icon, dirty
+	/// indicator, close-on-middle-click affordances). The returned element
+	/// must not handle close or drag interactions itself — the tab strip
+	/// overlays those.
+	fn tab_content(&self, cx: &App) -> AnyElement;
 
-    /// Whether this panel shows a close button and can be closed by the user.
-    ///
-    /// Non-closable panels can still be removed programmatically via
-    /// [`DockArea::remove_panel`](crate::dock::DockArea::remove_panel).
-    /// Defaults to `true`.
-    fn closable(&self) -> bool {
-        true
-    }
+	/// Whether this panel shows a close button and can be closed by the user.
+	///
+	/// Non-closable panels can still be removed programmatically via
+	/// [`DockArea::remove_panel`](crate::dock::DockArea::remove_panel).
+	/// Defaults to `true`.
+	fn closable(&self) -> bool {
+		true
+	}
 
-    /// Called when the user has asked to close this panel, before removal.
-    ///
-    /// Return `true` to allow the close, `false` to veto it (for example
-    /// after showing an "unsaved changes" dialog). This may be called on the
-    /// same event-loop turn as the close request, so asynchronous
-    /// confirmations should veto now and re-trigger closing later through
-    /// [`DockArea::remove_panel`](crate::dock::DockArea::remove_panel).
-    /// Defaults to `true`.
-    fn should_close(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
-        true
-    }
+	/// Called when the user has asked to close this panel, before removal.
+	///
+	/// Return `true` to allow the close, `false` to veto it (for example
+	/// after showing an "unsaved changes" dialog). This may be called on the
+	/// same event-loop turn as the close request, so asynchronous
+	/// confirmations should veto now and re-trigger closing later through
+	/// [`DockArea::remove_panel`](crate::dock::DockArea::remove_panel).
+	/// Defaults to `true`.
+	fn should_close(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
+		true
+	}
 
-    /// Called after a close was confirmed and before the panel is removed
-    /// from the layout.
-    ///
-    /// Use this to release resources tied to the dock (subscriptions,
-    /// scratch entities). The default implementation does nothing.
-    fn on_close(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+	/// Called after a close was confirmed and before the panel is removed
+	/// from the layout.
+	///
+	/// Use this to release resources tied to the dock (subscriptions,
+	/// scratch entities). The default implementation does nothing.
+	fn on_close(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 }
 
 /// A type-erased panel plus the metadata the dock chrome needs.
@@ -182,74 +182,74 @@ pub trait DockPanel: Render + EventEmitter<PanelEvent> + 'static {
 /// Construct with [`PanelHandle::new`]; pass to
 /// [`DockArea::add_panel`](crate::dock::DockArea::add_panel)(crate::dock::DockArea::add_panel).
 pub struct PanelHandle {
-    id: PanelId,
-    view: AnyView,
-    title: SharedString,
-    closable: bool,
-    /// Subscription to the panel's [`PanelEvent`]s while it is held by a
-    /// dock area, installed by [`DockArea`](crate::dock::DockArea) when the
-    /// panel is added.
-    subscription: Option<Subscription>,
+	id: PanelId,
+	view: AnyView,
+	title: SharedString,
+	closable: bool,
+	/// Subscription to the panel's [`PanelEvent`]s while it is held by a
+	/// dock area, installed by [`DockArea`](crate::dock::DockArea) when the
+	/// panel is added.
+	subscription: Option<Subscription>,
 }
 
 impl PanelHandle {
-    /// Wraps a panel view, snapshotting its current metadata.
-    ///
-    /// `panel` must implement [`DockPanel`](crate::dock::DockPanel). The handle keeps the view alive
-    /// for as long as it is stored in the dock area.
-    ///
-    /// # Panics
-    ///
-    /// Does not panic, but adding two handles with the same
-    /// [`DockPanel::panel_id`] to one dock area is rejected there.
-    pub fn new<P: DockPanel>(panel: Entity<P>, cx: &App) -> Self {
-        let id = panel.read(cx).panel_id();
-        let title = panel.read(cx).title(cx);
-        let closable = panel.read(cx).closable();
-        Self {
-            id,
-            view: panel.into(),
-            title,
-            closable,
-            subscription: None,
-        }
-    }
+	/// Wraps a panel view, snapshotting its current metadata.
+	///
+	/// `panel` must implement [`DockPanel`](crate::dock::DockPanel). The handle keeps the view alive
+	/// for as long as it is stored in the dock area.
+	///
+	/// # Panics
+	///
+	/// Does not panic, but adding two handles with the same
+	/// [`DockPanel::panel_id`] to one dock area is rejected there.
+	pub fn new<P: DockPanel>(panel: Entity<P>, cx: &App) -> Self {
+		let id = panel.read(cx).panel_id();
+		let title = panel.read(cx).title(cx);
+		let closable = panel.read(cx).closable();
+		Self {
+			id,
+			view: panel.into(),
+			title,
+			closable,
+			subscription: None,
+		}
+	}
 
-    /// Returns the id the panel reported at snapshot time.
-    pub fn panel_id(&self) -> PanelId {
-        self.id
-    }
+	/// Returns the id the panel reported at snapshot time.
+	pub fn panel_id(&self) -> PanelId {
+		self.id
+	}
 
-    /// Returns the cached tab title.
-    ///
-    /// May be stale between a title change and the dock area processing
-    /// [`PanelEvent::TitleChanged`]; treat as display-only.
-    pub fn title(&self) -> &SharedString {
-        &self.title
-    }
+	/// Returns the cached tab title.
+	///
+	/// May be stale between a title change and the dock area processing
+	/// [`PanelEvent::TitleChanged`]; treat as display-only.
+	pub fn title(&self) -> &SharedString {
+		&self.title
+	}
 
-    /// Returns the cached value of [`DockPanel::closable`].
-    pub fn closable(&self) -> bool {
-        self.closable
-    }
+	/// Returns the cached value of [`DockPanel::closable`].
+	pub fn closable(&self) -> bool {
+		self.closable
+	}
 
-    /// Returns the type-erased panel view.
-    pub fn view(&self) -> &AnyView {
-        &self.view
-    }
+	/// Returns the type-erased panel view.
+	pub fn view(&self) -> &AnyView {
+		&self.view
+	}
 
-    /// Returns the subscription to this panel's [`PanelEvent`]s, if the dock
-    /// area has installed one.
-    #[allow(dead_code)] // reserved for the dock's panel-event bookkeeping
-    pub(crate) fn subscription(&self) -> &Option<Subscription> {
-        &self.subscription
-    }
+	/// Returns the subscription to this panel's [`PanelEvent`]s, if the dock
+	/// area has installed one.
+	#[allow(dead_code)] // reserved for the dock's panel-event bookkeeping
+	pub(crate) fn subscription(&self) -> &Option<Subscription> {
+		&self.subscription
+	}
 
-    /// Installs (or replaces) the subscription to this panel's [`PanelEvent`]s.
-    ///
-    /// Used by [`DockArea`](crate::dock::DockArea) when the panel is added or
-    /// restored; the previous subscription, if any, is dropped.
-    pub(crate) fn set_subscription(&mut self, subscription: Option<Subscription>) {
-        self.subscription = subscription;
-    }
+	/// Installs (or replaces) the subscription to this panel's [`PanelEvent`]s.
+	///
+	/// Used by [`DockArea`](crate::dock::DockArea) when the panel is added or
+	/// restored; the previous subscription, if any, is dropped.
+	pub(crate) fn set_subscription(&mut self, subscription: Option<Subscription>) {
+		self.subscription = subscription;
+	}
 }

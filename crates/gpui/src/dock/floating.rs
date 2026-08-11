@@ -27,12 +27,12 @@
 //! Everything here is subject to change when the feature is implemented for
 //! real.
 
+use crate::colors::DefaultColors;
 use crate::dock::PanelHandle;
 use crate::{
-    div, px, Context, IntoElement, ParentElement, Pixels, Point, Render, Styled, Window,
-    WindowBounds,
+	Context, IntoElement, ParentElement, Pixels, Point, Render, Styled, Window, WindowBounds, div,
+	px,
 };
-use crate::colors::DefaultColors;
 
 /// A window hosting a single undocked panel.
 ///
@@ -46,43 +46,53 @@ use crate::colors::DefaultColors;
 /// [`DockLayoutState`](crate::dock::DockLayoutState) can restore the window
 /// geometry.
 pub struct FloatingPanelWindow {
-    /// The panel hosted by this window.
-    panel: PanelHandle,
-    /// Last known window position, mirrored into layout snapshots.
-    #[allow(dead_code)] // read once floating-window geometry is persisted
-    origin: Point<Pixels>,
+	/// The panel hosted by this window.
+	panel: PanelHandle,
+	/// Last known window position, mirrored into layout snapshots.
+	#[allow(dead_code)] // read once floating-window geometry is persisted
+	origin: Point<Pixels>,
 }
 
 impl FloatingPanelWindow {
-    /// Creates the content view for a new floating window hosting `panel`.
-    ///
-    /// The caller is responsible for opening the window with
-    /// `cx.open_window` and remembering its handle so it can be closed when
-    /// the panel re-docks. `initial_bounds` comes from the saved layout, or
-    /// from a sensible default near the main window.
-    pub fn new(
-        panel: PanelHandle,
-        initial_bounds: Option<WindowBounds>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let _ = cx;
-        let origin = initial_bounds
-            .map(|bounds| bounds.get_bounds().origin)
-            .unwrap_or_else(|| Point::new(px(0.0), px(0.0)));
-        Self { panel, origin }
-    }
+	/// Creates the content view for a new floating window hosting `panel`.
+	///
+	/// The caller is responsible for opening the window with
+	/// `cx.open_window` and remembering its handle so it can be closed when
+	/// the panel re-docks. `initial_bounds` comes from the saved layout, or
+	/// from a sensible default near the main window.
+	pub fn new(
+		panel: PanelHandle,
+		initial_bounds: Option<WindowBounds>,
+		cx: &mut Context<Self>,
+	) -> Self {
+		let _ = cx;
+		let origin = initial_bounds
+			.map(|bounds| bounds.get_bounds().origin)
+			.unwrap_or_else(|| Point::new(px(0.0), px(0.0)));
+		Self { panel, origin }
+	}
 }
 
 impl Render for FloatingPanelWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _ = window;
-        let title = self.panel.title().clone();
-        let view = self.panel.view().clone();
-        div().flex().flex_col().h_full().bg(cx.default_colors().clone().background)
-            .child(
-                div().flex().flex_row().items_center().w_full().px_2().py_1()
-                    .child(div().flex_1().text_xs().truncate().child(title)),
-            )
-            .child(div().flex_1().min_h_0().overflow_hidden().child(view))
-    }
+	fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+		let _ = window;
+		let title = self.panel.title().clone();
+		let view = self.panel.view().clone();
+		div()
+			.flex()
+			.flex_col()
+			.h_full()
+			.bg(cx.default_colors().clone().background)
+			.child(
+				div()
+					.flex()
+					.flex_row()
+					.items_center()
+					.w_full()
+					.px_2()
+					.py_1()
+					.child(div().flex_1().text_xs().truncate().child(title)),
+			)
+			.child(div().flex_1().min_h_0().overflow_hidden().child(view))
+	}
 }

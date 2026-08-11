@@ -4,8 +4,8 @@ pub use gpui_macros::Action;
 pub use no_action::{NoAction, Unbind, is_no_action, is_unbind};
 use serde_json::json;
 use std::{
-    any::{Any, TypeId},
-    fmt::Display,
+	any::{Any, TypeId},
+	fmt::Display,
 };
 
 /// Defines and registers unit structs that can be used as actions. For more complex data types, derive `Action`.
@@ -115,150 +115,150 @@ macro_rules! actions {
 /// register_action!(Paste);
 /// ```
 pub trait Action: Any + Send {
-    /// Clone the action into a new box
-    fn boxed_clone(&self) -> Box<dyn Action>;
+	/// Clone the action into a new box
+	fn boxed_clone(&self) -> Box<dyn Action>;
 
-    /// Do a partial equality check on this action and the other
-    fn partial_eq(&self, action: &dyn Action) -> bool;
+	/// Do a partial equality check on this action and the other
+	fn partial_eq(&self, action: &dyn Action) -> bool;
 
-    /// Get the name of this action, for displaying in UI
-    fn name(&self) -> &'static str;
+	/// Get the name of this action, for displaying in UI
+	fn name(&self) -> &'static str;
 
-    /// Get the name of this action type (static)
-    fn name_for_type() -> &'static str
-    where
-        Self: Sized;
+	/// Get the name of this action type (static)
+	fn name_for_type() -> &'static str
+	where
+		Self: Sized;
 
-    /// Build this action from a JSON value. This is used to construct actions from the keymap.
-    /// A value of `{}` will be passed for actions that don't have any parameters.
-    fn build(value: serde_json::Value) -> Result<Box<dyn Action>>
-    where
-        Self: Sized;
+	/// Build this action from a JSON value. This is used to construct actions from the keymap.
+	/// A value of `{}` will be passed for actions that don't have any parameters.
+	fn build(value: serde_json::Value) -> Result<Box<dyn Action>>
+	where
+		Self: Sized;
 
-    /// Optional JSON schema for the action's input data.
-    fn action_json_schema(_: &mut schemars::SchemaGenerator) -> Option<schemars::Schema>
-    where
-        Self: Sized,
-    {
-        None
-    }
+	/// Optional JSON schema for the action's input data.
+	fn action_json_schema(_: &mut schemars::SchemaGenerator) -> Option<schemars::Schema>
+	where
+		Self: Sized,
+	{
+		None
+	}
 
-    /// A list of alternate, deprecated names for this action. These names can still be used to
-    /// invoke the action. In Zed, the keymap JSON schema will accept these old names and provide
-    /// warnings.
-    fn deprecated_aliases() -> &'static [&'static str]
-    where
-        Self: Sized,
-    {
-        &[]
-    }
+	/// A list of alternate, deprecated names for this action. These names can still be used to
+	/// invoke the action. In Zed, the keymap JSON schema will accept these old names and provide
+	/// warnings.
+	fn deprecated_aliases() -> &'static [&'static str]
+	where
+		Self: Sized,
+	{
+		&[]
+	}
 
-    /// Returns the deprecation message for this action, if any. In Zed, the keymap JSON schema will
-    /// cause this to be displayed as a warning.
-    fn deprecation_message() -> Option<&'static str>
-    where
-        Self: Sized,
-    {
-        None
-    }
+	/// Returns the deprecation message for this action, if any. In Zed, the keymap JSON schema will
+	/// cause this to be displayed as a warning.
+	fn deprecation_message() -> Option<&'static str>
+	where
+		Self: Sized,
+	{
+		None
+	}
 
-    /// The documentation for this action, if any. When using the derive macro for actions
-    /// this will be automatically generated from the doc comments on the action struct.
-    fn documentation() -> Option<&'static str>
-    where
-        Self: Sized,
-    {
-        None
-    }
+	/// The documentation for this action, if any. When using the derive macro for actions
+	/// this will be automatically generated from the doc comments on the action struct.
+	fn documentation() -> Option<&'static str>
+	where
+		Self: Sized,
+	{
+		None
+	}
 }
 
 impl std::fmt::Debug for dyn Action {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("dyn Action")
-            .field("name", &self.name())
-            .finish()
-    }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("dyn Action")
+			.field("name", &self.name())
+			.finish()
+	}
 }
 
 impl dyn Action {
-    /// Type-erase Action type.
-    pub fn as_any(&self) -> &dyn Any {
-        self as &dyn Any
-    }
+	/// Type-erase Action type.
+	pub fn as_any(&self) -> &dyn Any {
+		self as &dyn Any
+	}
 }
 
 /// Error type for `Keystroke::parse`. This is used instead of `anyhow::Error` so that Zed can use
 /// markdown to display it.
 #[derive(Debug)]
 pub enum ActionBuildError {
-    /// Indicates that an action with this name has not been registered.
-    NotFound {
-        /// Name of the action that was not found.
-        name: String,
-    },
-    /// Indicates that an error occurred while building the action, typically a JSON deserialization
-    /// error.
-    BuildError {
-        /// Name of the action that was attempting to be built.
-        name: String,
-        /// Error that occurred while building the action.
-        error: anyhow::Error,
-    },
+	/// Indicates that an action with this name has not been registered.
+	NotFound {
+		/// Name of the action that was not found.
+		name: String,
+	},
+	/// Indicates that an error occurred while building the action, typically a JSON deserialization
+	/// error.
+	BuildError {
+		/// Name of the action that was attempting to be built.
+		name: String,
+		/// Error that occurred while building the action.
+		error: anyhow::Error,
+	},
 }
 
 impl std::error::Error for ActionBuildError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ActionBuildError::NotFound { .. } => None,
-            ActionBuildError::BuildError { error, .. } => error.source(),
-        }
-    }
+	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+		match self {
+			ActionBuildError::NotFound { .. } => None,
+			ActionBuildError::BuildError { error, .. } => error.source(),
+		}
+	}
 }
 
 impl Display for ActionBuildError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ActionBuildError::NotFound { name } => {
-                write!(f, "Didn't find an action named \"{name}\"")
-            }
-            ActionBuildError::BuildError { name, error } => {
-                write!(f, "Error while building action \"{name}\": {error}")
-            }
-        }
-    }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			ActionBuildError::NotFound { name } => {
+				write!(f, "Didn't find an action named \"{name}\"")
+			}
+			ActionBuildError::BuildError { name, error } => {
+				write!(f, "Error while building action \"{name}\": {error}")
+			}
+		}
+	}
 }
 
 type ActionBuilder = fn(json: serde_json::Value) -> anyhow::Result<Box<dyn Action>>;
 
 pub(crate) struct ActionRegistry {
-    by_name: HashMap<&'static str, ActionData>,
-    names_by_type_id: HashMap<TypeId, &'static str>,
-    all_names: Vec<&'static str>, // So we can return a static slice.
-    deprecated_aliases: HashMap<&'static str, &'static str>, // deprecated name -> preferred name
-    deprecation_messages: HashMap<&'static str, &'static str>, // action name -> deprecation message
-    documentation: HashMap<&'static str, &'static str>, // action name -> documentation
+	by_name: HashMap<&'static str, ActionData>,
+	names_by_type_id: HashMap<TypeId, &'static str>,
+	all_names: Vec<&'static str>, // So we can return a static slice.
+	deprecated_aliases: HashMap<&'static str, &'static str>, // deprecated name -> preferred name
+	deprecation_messages: HashMap<&'static str, &'static str>, // action name -> deprecation message
+	documentation: HashMap<&'static str, &'static str>, // action name -> documentation
 }
 
 impl Default for ActionRegistry {
-    fn default() -> Self {
-        let mut this = ActionRegistry {
-            by_name: Default::default(),
-            names_by_type_id: Default::default(),
-            documentation: Default::default(),
-            all_names: Default::default(),
-            deprecated_aliases: Default::default(),
-            deprecation_messages: Default::default(),
-        };
+	fn default() -> Self {
+		let mut this = ActionRegistry {
+			by_name: Default::default(),
+			names_by_type_id: Default::default(),
+			documentation: Default::default(),
+			all_names: Default::default(),
+			deprecated_aliases: Default::default(),
+			deprecation_messages: Default::default(),
+		};
 
-        this.load_actions();
+		this.load_actions();
 
-        this
-    }
+		this
+	}
 }
 
 struct ActionData {
-    pub build: ActionBuilder,
-    pub json_schema: fn(&mut schemars::SchemaGenerator) -> Option<schemars::Schema>,
+	pub build: ActionBuilder,
+	pub json_schema: fn(&mut schemars::SchemaGenerator) -> Option<schemars::Schema>,
 }
 
 /// This type must be public so that our macros can build it in other crates.
@@ -270,141 +270,141 @@ pub struct MacroActionBuilder(pub fn() -> MacroActionData);
 /// But this is an implementation detail and should not be used directly.
 #[doc(hidden)]
 pub struct MacroActionData {
-    pub name: &'static str,
-    pub type_id: TypeId,
-    pub build: ActionBuilder,
-    pub json_schema: fn(&mut schemars::SchemaGenerator) -> Option<schemars::Schema>,
-    pub deprecated_aliases: &'static [&'static str],
-    pub deprecation_message: Option<&'static str>,
-    pub documentation: Option<&'static str>,
+	pub name: &'static str,
+	pub type_id: TypeId,
+	pub build: ActionBuilder,
+	pub json_schema: fn(&mut schemars::SchemaGenerator) -> Option<schemars::Schema>,
+	pub deprecated_aliases: &'static [&'static str],
+	pub deprecation_message: Option<&'static str>,
+	pub documentation: Option<&'static str>,
 }
 
 inventory::collect!(MacroActionBuilder);
 
 impl ActionRegistry {
-    /// Load all registered actions into the registry.
-    pub(crate) fn load_actions(&mut self) {
-        for builder in inventory::iter::<MacroActionBuilder> {
-            let action = builder.0();
-            self.insert_action(action);
-        }
-    }
+	/// Load all registered actions into the registry.
+	pub(crate) fn load_actions(&mut self) {
+		for builder in inventory::iter::<MacroActionBuilder> {
+			let action = builder.0();
+			self.insert_action(action);
+		}
+	}
 
-    fn insert_action(&mut self, action: MacroActionData) {
-        let name = action.name;
-        if self.by_name.contains_key(name) {
-            panic!(
-                "Action with name `{name}` already registered \
+	fn insert_action(&mut self, action: MacroActionData) {
+		let name = action.name;
+		if self.by_name.contains_key(name) {
+			panic!(
+				"Action with name `{name}` already registered \
                 (might be registered in `#[action(deprecated_aliases = [...])]`."
-            );
-        }
-        self.by_name.insert(
-            name,
-            ActionData {
-                build: action.build,
-                json_schema: action.json_schema,
-            },
-        );
-        for &alias in action.deprecated_aliases {
-            if self.by_name.contains_key(alias) {
-                panic!(
-                    "Action with name `{alias}` already registered. \
+			);
+		}
+		self.by_name.insert(
+			name,
+			ActionData {
+				build: action.build,
+				json_schema: action.json_schema,
+			},
+		);
+		for &alias in action.deprecated_aliases {
+			if self.by_name.contains_key(alias) {
+				panic!(
+					"Action with name `{alias}` already registered. \
                     `{alias}` is specified in `#[action(deprecated_aliases = [...])]` for action `{name}`."
-                );
-            }
-            self.by_name.insert(
-                alias,
-                ActionData {
-                    build: action.build,
-                    json_schema: action.json_schema,
-                },
-            );
-            self.deprecated_aliases.insert(alias, name);
-            self.all_names.push(alias);
-        }
-        self.names_by_type_id.insert(action.type_id, name);
-        self.all_names.push(name);
-        if let Some(deprecation_msg) = action.deprecation_message {
-            self.deprecation_messages.insert(name, deprecation_msg);
-        }
-        if let Some(documentation) = action.documentation {
-            self.documentation.insert(name, documentation);
-        }
-    }
+				);
+			}
+			self.by_name.insert(
+				alias,
+				ActionData {
+					build: action.build,
+					json_schema: action.json_schema,
+				},
+			);
+			self.deprecated_aliases.insert(alias, name);
+			self.all_names.push(alias);
+		}
+		self.names_by_type_id.insert(action.type_id, name);
+		self.all_names.push(name);
+		if let Some(deprecation_msg) = action.deprecation_message {
+			self.deprecation_messages.insert(name, deprecation_msg);
+		}
+		if let Some(documentation) = action.documentation {
+			self.documentation.insert(name, documentation);
+		}
+	}
 
-    /// Construct an action based on its name and optional JSON parameters sourced from the keymap.
-    pub fn build_action_type(&self, type_id: &TypeId) -> Result<Box<dyn Action>> {
-        let name = self
-            .names_by_type_id
-            .get(type_id)
-            .with_context(|| format!("no action type registered for {type_id:?}"))?;
+	/// Construct an action based on its name and optional JSON parameters sourced from the keymap.
+	pub fn build_action_type(&self, type_id: &TypeId) -> Result<Box<dyn Action>> {
+		let name = self
+			.names_by_type_id
+			.get(type_id)
+			.with_context(|| format!("no action type registered for {type_id:?}"))?;
 
-        Ok(self.build_action(name, None)?)
-    }
+		Ok(self.build_action(name, None)?)
+	}
 
-    /// Construct an action based on its name and optional JSON parameters sourced from the keymap.
-    pub fn build_action(
-        &self,
-        name: &str,
-        params: Option<serde_json::Value>,
-    ) -> std::result::Result<Box<dyn Action>, ActionBuildError> {
-        let build_action = self
-            .by_name
-            .get(name)
-            .ok_or_else(|| ActionBuildError::NotFound {
-                name: name.to_owned(),
-            })?
-            .build;
-        (build_action)(params.unwrap_or_else(|| json!({}))).map_err(|e| {
-            ActionBuildError::BuildError {
-                name: name.to_owned(),
-                error: e,
-            }
-        })
-    }
+	/// Construct an action based on its name and optional JSON parameters sourced from the keymap.
+	pub fn build_action(
+		&self,
+		name: &str,
+		params: Option<serde_json::Value>,
+	) -> std::result::Result<Box<dyn Action>, ActionBuildError> {
+		let build_action = self
+			.by_name
+			.get(name)
+			.ok_or_else(|| ActionBuildError::NotFound {
+				name: name.to_owned(),
+			})?
+			.build;
+		(build_action)(params.unwrap_or_else(|| json!({}))).map_err(|e| {
+			ActionBuildError::BuildError {
+				name: name.to_owned(),
+				error: e,
+			}
+		})
+	}
 
-    pub fn all_action_names(&self) -> &[&'static str] {
-        self.all_names.as_slice()
-    }
+	pub fn all_action_names(&self) -> &[&'static str] {
+		self.all_names.as_slice()
+	}
 
-    pub fn action_schemas(
-        &self,
-        generator: &mut schemars::SchemaGenerator,
-    ) -> Vec<(&'static str, Option<schemars::Schema>)> {
-        // Use the order from all_names so that the resulting schema has sensible order.
-        self.all_names
-            .iter()
-            .map(|name| {
-                let action_data = self
-                    .by_name
-                    .get(name)
-                    .expect("All actions in all_names should be registered");
-                (*name, (action_data.json_schema)(generator))
-            })
-            .collect::<Vec<_>>()
-    }
+	pub fn action_schemas(
+		&self,
+		generator: &mut schemars::SchemaGenerator,
+	) -> Vec<(&'static str, Option<schemars::Schema>)> {
+		// Use the order from all_names so that the resulting schema has sensible order.
+		self.all_names
+			.iter()
+			.map(|name| {
+				let action_data = self
+					.by_name
+					.get(name)
+					.expect("All actions in all_names should be registered");
+				(*name, (action_data.json_schema)(generator))
+			})
+			.collect::<Vec<_>>()
+	}
 
-    pub fn action_schema_by_name(
-        &self,
-        name: &str,
-        generator: &mut schemars::SchemaGenerator,
-    ) -> Option<Option<schemars::Schema>> {
-        self.by_name
-            .get(name)
-            .map(|action_data| (action_data.json_schema)(generator))
-    }
+	pub fn action_schema_by_name(
+		&self,
+		name: &str,
+		generator: &mut schemars::SchemaGenerator,
+	) -> Option<Option<schemars::Schema>> {
+		self.by_name
+			.get(name)
+			.map(|action_data| (action_data.json_schema)(generator))
+	}
 
-    pub fn deprecated_aliases(&self) -> &HashMap<&'static str, &'static str> {
-        &self.deprecated_aliases
-    }
+	pub fn deprecated_aliases(&self) -> &HashMap<&'static str, &'static str> {
+		&self.deprecated_aliases
+	}
 
-    pub fn deprecation_messages(&self) -> &HashMap<&'static str, &'static str> {
-        &self.deprecation_messages
-    }
+	pub fn deprecation_messages(&self) -> &HashMap<&'static str, &'static str> {
+		&self.deprecation_messages
+	}
 
-    pub fn documentation(&self) -> &HashMap<&'static str, &'static str> {
-        &self.documentation
-    }
+	pub fn documentation(&self) -> &HashMap<&'static str, &'static str> {
+		&self.documentation
+	}
 }
 
 /// Generate a list of all the registered actions.
@@ -412,42 +412,42 @@ impl ActionRegistry {
 /// format suited for static analysis such as in validating keymaps, or
 /// generating documentation.
 pub fn generate_list_of_all_registered_actions() -> impl Iterator<Item = MacroActionData> {
-    inventory::iter::<MacroActionBuilder>
-        .into_iter()
-        .map(|builder| builder.0())
+	inventory::iter::<MacroActionBuilder>
+		.into_iter()
+		.map(|builder| builder.0())
 }
 
 mod no_action {
-    use crate as gpui;
-    use schemars::JsonSchema;
-    use serde::Deserialize;
+	use crate as gpui;
+	use schemars::JsonSchema;
+	use serde::Deserialize;
 
-    actions!(
-        zed,
-        [
-            /// Action with special handling which unbinds the keybinding this is associated with,
-            /// if it is the highest precedence match.
-            NoAction
-        ]
-    );
+	actions!(
+		zed,
+		[
+			/// Action with special handling which unbinds the keybinding this is associated with,
+			/// if it is the highest precedence match.
+			NoAction
+		]
+	);
 
-    /// Action with special handling which unbinds later bindings for the same keystrokes when they
-    /// dispatch the named action, regardless of that action's context.
-    ///
-    /// In keymap JSON this is written as:
-    ///
-    /// `["zed::Unbind", "editor::NewLine"]`
-    #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, gpui::Action)]
-    #[action(namespace = zed)]
-    pub struct Unbind(pub gpui::SharedString);
+	/// Action with special handling which unbinds later bindings for the same keystrokes when they
+	/// dispatch the named action, regardless of that action's context.
+	///
+	/// In keymap JSON this is written as:
+	///
+	/// `["zed::Unbind", "editor::NewLine"]`
+	#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema, gpui::Action)]
+	#[action(namespace = zed)]
+	pub struct Unbind(pub gpui::SharedString);
 
-    /// Returns whether or not this action represents a removed key binding.
-    pub fn is_no_action(action: &dyn gpui::Action) -> bool {
-        action.as_any().is::<NoAction>()
-    }
+	/// Returns whether or not this action represents a removed key binding.
+	pub fn is_no_action(action: &dyn gpui::Action) -> bool {
+		action.as_any().is::<NoAction>()
+	}
 
-    /// Returns whether or not this action represents an unbind marker.
-    pub fn is_unbind(action: &dyn gpui::Action) -> bool {
-        action.as_any().is::<Unbind>()
-    }
+	/// Returns whether or not this action represents an unbind marker.
+	pub fn is_unbind(action: &dyn gpui::Action) -> bool {
+		action.as_any().is::<Unbind>()
+	}
 }

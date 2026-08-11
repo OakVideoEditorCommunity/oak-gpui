@@ -28,15 +28,15 @@ use crate::SharedString;
 pub struct EffectId(pub u64);
 
 impl fmt::Display for EffectId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "effect-{}", self.0)
-    }
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "effect-{}", self.0)
+	}
 }
 
 impl From<u64> for EffectId {
-    fn from(raw: u64) -> Self {
-        Self(raw)
-    }
+	fn from(raw: u64) -> Self {
+		Self(raw)
+	}
 }
 
 /// Which role a card plays in the linear chain.
@@ -49,14 +49,14 @@ impl From<u64> for EffectId {
 /// what [`EffectData::is_removable`] / [`EffectData::is_reorderable`] say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EffectCardKind {
-    /// The media/source card (e.g. the clip's footage). Fixed at the top of
-    /// the stack; not removable, not reorderable.
-    Source,
-    /// A regular effect card. Reorderable and removable by default.
-    Effect,
-    /// The output card. Fixed at the bottom of the stack; not removable,
-    /// not reorderable.
-    Output,
+	/// The media/source card (e.g. the clip's footage). Fixed at the top of
+	/// the stack; not removable, not reorderable.
+	Source,
+	/// A regular effect card. Reorderable and removable by default.
+	Effect,
+	/// The output card. Fixed at the bottom of the stack; not removable,
+	/// not reorderable.
+	Output,
 }
 
 /// Read-only view of one card in the effect stack.
@@ -70,66 +70,66 @@ pub enum EffectCardKind {
 /// applies them to its model, and the next render observes the new values
 /// here.
 pub trait EffectData: 'static {
-    /// Stable identity of this card; see [`EffectId`] for invariants.
-    fn id(&self) -> EffectId;
+	/// Stable identity of this card; see [`EffectId`] for invariants.
+	fn id(&self) -> EffectId;
 
-    /// The role of this card in the chain. See [`EffectCardKind`].
-    fn kind(&self) -> EffectCardKind;
+	/// The role of this card in the chain. See [`EffectCardKind`].
+	fn kind(&self) -> EffectCardKind;
 
-    /// Primary label shown in the card header (e.g. `"Transform"`,
-    /// `"OCIO LUT"`).
-    fn title(&self) -> SharedString;
+	/// Primary label shown in the card header (e.g. `"Transform"`,
+	/// `"OCIO LUT"`).
+	fn title(&self) -> SharedString;
 
-    /// Optional secondary line shown under the title in a muted style, e.g.
-    /// the LUT filename or a one-line parameter summary.
-    ///
-    /// Defaults to `None` (no subtitle row is laid out).
-    fn subtitle(&self) -> Option<SharedString> {
-        None
-    }
+	/// Optional secondary line shown under the title in a muted style, e.g.
+	/// the LUT filename or a one-line parameter summary.
+	///
+	/// Defaults to `None` (no subtitle row is laid out).
+	fn subtitle(&self) -> Option<SharedString> {
+		None
+	}
 
-    /// Whether the effect is currently enabled (not bypassed).
-    ///
-    /// Disabled cards are rendered dimmed and their parameter area is
-    /// inert. Source and output cards should return `true`; the view does
-    /// not render an enable toggle for them.
-    fn is_enabled(&self) -> bool;
+	/// Whether the effect is currently enabled (not bypassed).
+	///
+	/// Disabled cards are rendered dimmed and their parameter area is
+	/// inert. Source and output cards should return `true`; the view does
+	/// not render an enable toggle for them.
+	fn is_enabled(&self) -> bool;
 
-    /// Whether the card's parameter area is currently expanded.
-    ///
-    /// Expansion state lives in the app's model (so it can persist and sync
-    /// with [`crate::node_graph`]); toggling it is requested via
-    /// [`EffectStackEvent::ExpansionToggled`](crate::effect_stack::EffectStackEvent::ExpansionToggled).
-    fn is_expanded(&self) -> bool;
+	/// Whether the card's parameter area is currently expanded.
+	///
+	/// Expansion state lives in the app's model (so it can persist and sync
+	/// with [`crate::node_graph`]); toggling it is requested via
+	/// [`EffectStackEvent::ExpansionToggled`](crate::effect_stack::EffectStackEvent::ExpansionToggled).
+	fn is_expanded(&self) -> bool;
 
-    /// Whether the card may be removed from the stack.
-    ///
-    /// Defaults to `true` for [`EffectCardKind::Effect`] and `false` for
-    /// source/output cards. When `false`, the remove affordance is hidden
-    /// and [`EffectStackEvent::RemoveRequested`](crate::effect_stack::EffectStackEvent::RemoveRequested)
-    /// is never emitted for this card.
-    fn is_removable(&self) -> bool {
-        self.kind() == EffectCardKind::Effect
-    }
+	/// Whether the card may be removed from the stack.
+	///
+	/// Defaults to `true` for [`EffectCardKind::Effect`] and `false` for
+	/// source/output cards. When `false`, the remove affordance is hidden
+	/// and [`EffectStackEvent::RemoveRequested`](crate::effect_stack::EffectStackEvent::RemoveRequested)
+	/// is never emitted for this card.
+	fn is_removable(&self) -> bool {
+		self.kind() == EffectCardKind::Effect
+	}
 
-    /// Whether the card may be reordered by dragging.
-    ///
-    /// Defaults to `true` for [`EffectCardKind::Effect`] and `false` for
-    /// source/output cards. When `false`, the drag handle is hidden and the
-    /// card never participates in a reorder (neither as the dragged card
-    /// nor as a displaced neighbor position).
-    fn is_reorderable(&self) -> bool {
-        self.kind() == EffectCardKind::Effect
-    }
+	/// Whether the card may be reordered by dragging.
+	///
+	/// Defaults to `true` for [`EffectCardKind::Effect`] and `false` for
+	/// source/output cards. When `false`, the drag handle is hidden and the
+	/// card never participates in a reorder (neither as the dragged card
+	/// nor as a displaced neighbor position).
+	fn is_reorderable(&self) -> bool {
+		self.kind() == EffectCardKind::Effect
+	}
 
-    /// Optional numeric badge shown in the card header, e.g. the number of
-    /// animated parameters on the effect.
-    ///
-    /// `Some(0)` and `None` both render no badge; prefer `None`. Large
-    /// values are clamped visually (e.g. `99+`).
-    fn badge_count(&self) -> Option<usize> {
-        None
-    }
+	/// Optional numeric badge shown in the card header, e.g. the number of
+	/// animated parameters on the effect.
+	///
+	/// `Some(0)` and `None` both render no badge; prefer `None`. Large
+	/// values are clamped visually (e.g. `99+`).
+	fn badge_count(&self) -> Option<usize> {
+		None
+	}
 }
 
 /// Ordered collection of effect cards backing an [`EffectStackView`](crate::effect_stack::EffectStackView).
@@ -146,37 +146,37 @@ pub trait EffectData: 'static {
 /// and [`can_reorder`](EffectStackDataSource::can_reorder) refer to
 /// positions in this list.
 pub trait EffectStackDataSource: 'static {
-    /// All cards in the stack, top-to-bottom (signal order).
-    ///
-    /// May be empty (or contain only source/output) — see
-    /// [`target_label`](EffectStackDataSource::target_label) for the
-    /// empty-selection state, which is distinct from a stack with no
-    /// effects.
-    fn effects(&self) -> Vec<Arc<dyn EffectData>>;
+	/// All cards in the stack, top-to-bottom (signal order).
+	///
+	/// May be empty (or contain only source/output) — see
+	/// [`target_label`](EffectStackDataSource::target_label) for the
+	/// empty-selection state, which is distinct from a stack with no
+	/// effects.
+	fn effects(&self) -> Vec<Arc<dyn EffectData>>;
 
-    /// Label describing what this stack edits, e.g. the clip name shown in
-    /// the panel header.
-    ///
-    /// Return `None` when there is no valid selection (no clip under the
-    /// playhead, multi-selection, etc.). The view then renders an empty
-    /// state instead of cards and suppresses all card interactions.
-    fn target_label(&self) -> Option<SharedString>;
+	/// Label describing what this stack edits, e.g. the clip name shown in
+	/// the panel header.
+	///
+	/// Return `None` when there is no valid selection (no clip under the
+	/// playhead, multi-selection, etc.). The view then renders an empty
+	/// state instead of cards and suppresses all card interactions.
+	fn target_label(&self) -> Option<SharedString>;
 
-    /// Whether dropping the given effect at `new_index` (an index into the
-    /// list returned by [`effects`](EffectStackDataSource::effects)) would
-    /// be a valid reorder.
-    ///
-    /// Called continuously during a drag to drive the insertion indicator;
-    /// invalid positions render as "not allowed". The default
-    /// implementation allows any position between the source and output
-    /// cards. Apps override this to reject reorders that would produce
-    /// invalid signal chains (e.g. a node that requires two inputs).
-    ///
-    /// Note this is advisory UI feedback only — the app re-validates when
-    /// the actual
-    /// [`ReorderRequested`](crate::effect_stack::EffectStackEvent::ReorderRequested)
-    /// event arrives.
-    fn can_reorder(&self, _id: EffectId, _new_index: usize) -> bool {
-        true
-    }
+	/// Whether dropping the given effect at `new_index` (an index into the
+	/// list returned by [`effects`](EffectStackDataSource::effects)) would
+	/// be a valid reorder.
+	///
+	/// Called continuously during a drag to drive the insertion indicator;
+	/// invalid positions render as "not allowed". The default
+	/// implementation allows any position between the source and output
+	/// cards. Apps override this to reject reorders that would produce
+	/// invalid signal chains (e.g. a node that requires two inputs).
+	///
+	/// Note this is advisory UI feedback only — the app re-validates when
+	/// the actual
+	/// [`ReorderRequested`](crate::effect_stack::EffectStackEvent::ReorderRequested)
+	/// event arrives.
+	fn can_reorder(&self, _id: EffectId, _new_index: usize) -> bool {
+		true
+	}
 }

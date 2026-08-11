@@ -85,6 +85,6 @@ pub use dock_area::{DockArea, DockEvent};
 pub use floating::FloatingPanelWindow;
 pub(crate) use layout::path_key;
 pub use layout::{
-    DockLayout, DockLayoutState, DockNode, DropTarget, DropZone, NodePath, PanelRegistry,
+	DockLayout, DockLayoutState, DockNode, DropTarget, DropZone, NodePath, PanelRegistry,
 };
 pub use panel::{DockPanel, PanelEvent, PanelHandle, PanelId};

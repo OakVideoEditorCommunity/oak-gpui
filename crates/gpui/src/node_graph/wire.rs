@@ -18,19 +18,19 @@ pub const WIRE_CURVATURE: Pixels = px(60.0);
 /// The visual state of a wire, chosen by the view per frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WireVisualState {
-    /// A regular, idle wire.
-    #[default]
-    Normal,
-    /// The wire is hovered (slightly brightened; click targets become
-    /// discoverable).
-    Hovered,
-    /// The wire is part of the selection (accent color, thicker stroke).
-    Selected,
-    /// The ghost wire of an in-progress drag whose current hover target (if
-    /// any) was rejected by
-    /// [`NodeGraphDataSource::can_connect`](crate::node_graph::NodeGraphDataSource::can_connect).
-    /// Drawn dashed/red to signal "dropping here will not connect".
-    InvalidDrag,
+	/// A regular, idle wire.
+	#[default]
+	Normal,
+	/// The wire is hovered (slightly brightened; click targets become
+	/// discoverable).
+	Hovered,
+	/// The wire is part of the selection (accent color, thicker stroke).
+	Selected,
+	/// The ghost wire of an in-progress drag whose current hover target (if
+	/// any) was rejected by
+	/// [`NodeGraphDataSource::can_connect`](crate::node_graph::NodeGraphDataSource::can_connect).
+	/// Drawn dashed/red to signal "dropping here will not connect".
+	InvalidDrag,
 }
 
 /// A fully-resolved wire ready to paint: both endpoints are already computed
@@ -40,76 +40,72 @@ pub enum WireVisualState {
 /// from an [`EdgeData`](crate::node_graph::EdgeData) plus the port anchors of
 /// the two endpoint nodes.
 pub struct Wire {
-    edge: EdgeId,
-    from: Point<Pixels>,
-    to: Point<Pixels>,
-    color: Hsla,
-    state: WireVisualState,
+	edge: EdgeId,
+	from: Point<Pixels>,
+	to: Point<Pixels>,
+	color: Hsla,
+	state: WireVisualState,
 }
 
 impl Wire {
-    /// Creates a wire between two screen-space anchor points, tinted with the
-    /// connection's data-type color.
-    pub fn new(
-        edge: EdgeId,
-        from: Point<Pixels>,
-        to: Point<Pixels>,
-        data_type: &PortDataType,
-        state: WireVisualState,
-    ) -> Self {
-        Self {
-            edge,
-            from,
-            to,
-            color: data_type.color,
-            state,
-        }
-    }
+	/// Creates a wire between two screen-space anchor points, tinted with the
+	/// connection's data-type color.
+	pub fn new(
+		edge: EdgeId,
+		from: Point<Pixels>,
+		to: Point<Pixels>,
+		data_type: &PortDataType,
+		state: WireVisualState,
+	) -> Self {
+		Self {
+			edge,
+			from,
+			to,
+			color: data_type.color,
+			state,
+		}
+	}
 
-    /// Returns the edge this wire represents.
-    pub fn edge(&self) -> EdgeId {
-        self.edge
-    }
+	/// Returns the edge this wire represents.
+	pub fn edge(&self) -> EdgeId {
+		self.edge
+	}
 
-    /// Builds the cubic bezier [`crate::Path`] for a wire from `from` to
-    /// `to`, leaving both endpoints horizontally: the control points are
-    /// placed `WIRE_CURVATURE * zoom` to the right of `from` and to the left
-    /// of `to`. Shared by regular wires and the ghost wire so both have
-    /// identical curvature behavior.
-    ///
-    /// Returns `None` when the path cannot be built (degenerate input); the
-    /// caller simply skips painting that frame.
-    pub fn build_path(
-        from: Point<Pixels>,
-        to: Point<Pixels>,
-        zoom: f32,
-    ) -> Option<Path<Pixels>> {
-        wire_path(from, to, zoom, px(2.0), None)
-    }
+	/// Builds the cubic bezier [`crate::Path`] for a wire from `from` to
+	/// `to`, leaving both endpoints horizontally: the control points are
+	/// placed `WIRE_CURVATURE * zoom` to the right of `from` and to the left
+	/// of `to`. Shared by regular wires and the ghost wire so both have
+	/// identical curvature behavior.
+	///
+	/// Returns `None` when the path cannot be built (degenerate input); the
+	/// caller simply skips painting that frame.
+	pub fn build_path(from: Point<Pixels>, to: Point<Pixels>, zoom: f32) -> Option<Path<Pixels>> {
+		wire_path(from, to, zoom, px(2.0), None)
+	}
 
-    /// Paints the wire with [`Window::paint_path`], applying the stroke width
-    /// and color adjustments implied by its [`WireVisualState`].
-    pub fn paint(&self, window: &mut Window, zoom: f32) {
-        let (color, width, dash) = match self.state {
-            WireVisualState::Normal => (self.color.opacity(0.6), px(2.0), None),
-            WireVisualState::Hovered => (self.color, px(2.5), None),
-            WireVisualState::Selected => (self.color, px(3.0), None),
-            WireVisualState::InvalidDrag => (
-                hsla(0.0, 0.85, 0.55, 1.0),
-                px(2.0),
-                Some([px(6.0), px(4.0)]),
-            ),
-        };
-        if let Some(path) = wire_path(
-            self.from,
-            self.to,
-            zoom,
-            width,
-            dash.as_ref().map(|dash| &dash[..]),
-        ) {
-            window.paint_path(path, color);
-        }
-    }
+	/// Paints the wire with [`Window::paint_path`], applying the stroke width
+	/// and color adjustments implied by its [`WireVisualState`].
+	pub fn paint(&self, window: &mut Window, zoom: f32) {
+		let (color, width, dash) = match self.state {
+			WireVisualState::Normal => (self.color.opacity(0.6), px(2.0), None),
+			WireVisualState::Hovered => (self.color, px(2.5), None),
+			WireVisualState::Selected => (self.color, px(3.0), None),
+			WireVisualState::InvalidDrag => (
+				hsla(0.0, 0.85, 0.55, 1.0),
+				px(2.0),
+				Some([px(6.0), px(4.0)]),
+			),
+		};
+		if let Some(path) = wire_path(
+			self.from,
+			self.to,
+			zoom,
+			width,
+			dash.as_ref().map(|dash| &dash[..]),
+		) {
+			window.paint_path(path, color);
+		}
+	}
 }
 
 /// Builds the cubic bezier path for a wire stroke with the given width and
@@ -117,24 +113,24 @@ impl Wire {
 /// [`Wire::build_path`] and the ghost wire both delegate to it so every wire
 /// shares the same curvature behavior.
 pub(crate) fn wire_path(
-    from: Point<Pixels>,
-    to: Point<Pixels>,
-    zoom: f32,
-    width: Pixels,
-    dash: Option<&[Pixels]>,
+	from: Point<Pixels>,
+	to: Point<Pixels>,
+	zoom: f32,
+	width: Pixels,
+	dash: Option<&[Pixels]>,
 ) -> Option<Path<Pixels>> {
-    let mut builder = PathBuilder::stroke(width);
-    if let Some(dash) = dash {
-        builder = builder.dash_array(dash);
-    }
-    let curvature = WIRE_CURVATURE * zoom;
-    builder.move_to(from);
-    builder.cubic_bezier_to(
-        to,
-        point(from.x + curvature, from.y),
-        point(to.x - curvature, to.y),
-    );
-    builder.build().ok()
+	let mut builder = PathBuilder::stroke(width);
+	if let Some(dash) = dash {
+		builder = builder.dash_array(dash);
+	}
+	let curvature = WIRE_CURVATURE * zoom;
+	builder.move_to(from);
+	builder.cubic_bezier_to(
+		to,
+		point(from.x + curvature, from.y),
+		point(to.x - curvature, to.y),
+	);
+	builder.build().ok()
 }
 
 /// The transient "ghost" wire shown while the user drags a connection from a
@@ -146,89 +142,85 @@ pub(crate) fn wire_path(
 /// [`WireVisualState::InvalidDrag`] depending on
 /// [`NodeGraphDataSource::can_connect`](crate::node_graph::NodeGraphDataSource::can_connect).
 pub struct GhostWire {
-    /// The screen-space anchor of the port the drag started from.
-    source: Point<Pixels>,
-    /// The current screen-space position of the free end (cursor, or a
-    /// snapped hover-target anchor).
-    free_end: Point<Pixels>,
-    /// Data type of the source port; tints the ghost.
-    color: Hsla,
-    /// Whether the current hover target is a valid drop (drives the
-    /// [`WireVisualState::InvalidDrag`] styling).
-    target_valid: bool,
-    /// Whether the drag started from an output port. When `false` (drag
-    /// started from an input), `source`/`free_end` are swapped when building
-    /// the path so the bezier tangents still point the right way.
-    from_output: bool,
+	/// The screen-space anchor of the port the drag started from.
+	source: Point<Pixels>,
+	/// The current screen-space position of the free end (cursor, or a
+	/// snapped hover-target anchor).
+	free_end: Point<Pixels>,
+	/// Data type of the source port; tints the ghost.
+	color: Hsla,
+	/// Whether the current hover target is a valid drop (drives the
+	/// [`WireVisualState::InvalidDrag`] styling).
+	target_valid: bool,
+	/// Whether the drag started from an output port. When `false` (drag
+	/// started from an input), `source`/`free_end` are swapped when building
+	/// the path so the bezier tangents still point the right way.
+	from_output: bool,
 }
 
 impl GhostWire {
-    /// Creates a ghost wire anchored at `source` (screen space), tinted with
-    /// the source port's data type. `from_output` records the drag direction;
-    /// see the field docs.
-    pub fn new(
-        source: Point<Pixels>,
-        data_type: &PortDataType,
-        from_output: bool,
-    ) -> Self {
-        Self {
-            source,
-            free_end: source,
-            color: data_type.color,
-            target_valid: false,
-            from_output,
-        }
-    }
+	/// Creates a ghost wire anchored at `source` (screen space), tinted with
+	/// the source port's data type. `from_output` records the drag direction;
+	/// see the field docs.
+	pub fn new(source: Point<Pixels>, data_type: &PortDataType, from_output: bool) -> Self {
+		Self {
+			source,
+			free_end: source,
+			color: data_type.color,
+			target_valid: false,
+			from_output,
+		}
+	}
 
-    /// Returns the screen-space anchor of the port the drag started from.
-    pub(crate) fn source(&self) -> Point<Pixels> {
-        self.source
-    }
+	/// Returns the screen-space anchor of the port the drag started from.
+	pub(crate) fn source(&self) -> Point<Pixels> {
+		self.source
+	}
 
-    /// Returns the current screen-space position of the free end.
-    pub(crate) fn free_end(&self) -> Point<Pixels> {
-        self.free_end
-    }
+	/// Returns the current screen-space position of the free end.
+	pub(crate) fn free_end(&self) -> Point<Pixels> {
+		self.free_end
+	}
 
-    /// Returns the data-type color tinting the ghost.
-    pub(crate) fn color(&self) -> Hsla {
-        self.color
-    }
+	/// Returns the data-type color tinting the ghost.
+	pub(crate) fn color(&self) -> Hsla {
+		self.color
+	}
 
-    /// Returns whether the currently hovered port is a valid drop target.
-    pub(crate) fn is_target_valid(&self) -> bool {
-        self.target_valid
-    }
+	/// Returns whether the currently hovered port is a valid drop target.
+	pub(crate) fn is_target_valid(&self) -> bool {
+		self.target_valid
+	}
 
-    /// Returns whether the drag started from an output port.
-    pub(crate) fn is_from_output(&self) -> bool {
-        self.from_output
-    }
+	/// Returns whether the drag started from an output port.
+	pub(crate) fn is_from_output(&self) -> bool {
+		self.from_output
+	}
 
-    /// Moves the free end to `cursor` (screen space) and records whether the
-    /// currently hovered port — if any — is a valid drop target. Pass
-    /// `snapped = Some(anchor)` instead of the raw cursor when the cursor is
-    /// inside a port's grab radius, so the ghost visually snaps onto it.
-    pub fn update(
-        &mut self,
-        cursor: Point<Pixels>,
-        snapped: Option<Point<Pixels>>,
-        target_valid: bool,
-    ) {
-        self.free_end = snapped.unwrap_or(cursor);
-        self.target_valid = target_valid;
-    }
+	/// Moves the free end to `cursor` (screen space) and records whether the
+	/// currently hovered port — if any — is a valid drop target. Pass
+	/// `snapped = Some(anchor)` instead of the raw cursor when the cursor is
+	/// inside a port's grab radius, so the ghost visually snaps onto it.
+	pub fn update(
+		&mut self,
+		cursor: Point<Pixels>,
+		snapped: Option<Point<Pixels>>,
+		target_valid: bool,
+	) {
+		self.free_end = snapped.unwrap_or(cursor);
+		self.target_valid = target_valid;
+	}
 
-    /// Paints the ghost wire using the same bezier shape as [`Wire`], with
-    /// its state styling.
-    pub fn paint(&self, window: &mut Window, zoom: f32) {
-        let (from, to) = if self.from_output {
-            (self.source, self.free_end)
-        } else {
-            (self.free_end, self.source)
-        };
-        paint_ghost(window, from, to, self.color, self.target_valid, zoom);
-    }
+	/// Paints the ghost wire using the same bezier shape as [`Wire`], with
+	/// its state styling.
+	pub fn paint(&self, window: &mut Window, zoom: f32) {
+		let (from, to) = if self.from_output {
+			(self.source, self.free_end)
+		} else {
+			(self.free_end, self.source)
+		};
+		paint_ghost(window, from, to, self.color, self.target_valid, zoom);
+	}
 }
 
 /// Paints the ghost wire between two screen-space anchors. Valid drops are
@@ -237,20 +229,20 @@ impl GhostWire {
 /// connect. Used both by [`GhostWire::paint`] and by the view's frame
 /// snapshot.
 pub(crate) fn paint_ghost(
-    window: &mut Window,
-    from: Point<Pixels>,
-    to: Point<Pixels>,
-    color: Hsla,
-    target_valid: bool,
-    zoom: f32,
+	window: &mut Window,
+	from: Point<Pixels>,
+	to: Point<Pixels>,
+	color: Hsla,
+	target_valid: bool,
+	zoom: f32,
 ) {
-    if target_valid {
-        if let Some(path) = wire_path(from, to, zoom, px(2.5), None) {
-            window.paint_path(path, color);
-        }
-    } else if let Some(path) = wire_path(from, to, zoom, px(2.0), Some(&[px(6.0), px(4.0)])) {
-        window.paint_path(path, hsla(0.0, 0.85, 0.55, 1.0));
-    }
+	if target_valid {
+		if let Some(path) = wire_path(from, to, zoom, px(2.5), None) {
+			window.paint_path(path, color);
+		}
+	} else if let Some(path) = wire_path(from, to, zoom, px(2.0), Some(&[px(6.0), px(4.0)])) {
+		window.paint_path(path, hsla(0.0, 0.85, 0.55, 1.0));
+	}
 }
 
 /// Pixels per second the [`FlowAnimation`] dash phase advances while active.
@@ -267,36 +259,36 @@ pub const FLOW_SPEED: f32 = 60.0;
 /// their static style while inactive.
 #[derive(Clone, Debug, Default)]
 pub struct FlowAnimation {
-    /// Current dash phase in pixels, monotonically increasing while active.
-    phase: Pixels,
-    /// Whether the animation is currently running (e.g. during playback).
-    active: bool,
+	/// Current dash phase in pixels, monotonically increasing while active.
+	phase: Pixels,
+	/// Whether the animation is currently running (e.g. during playback).
+	active: bool,
 }
 
 impl FlowAnimation {
-    /// Starts the flow animation (e.g. when playback begins), resetting the
-    /// phase to zero.
-    pub fn start(&mut self) {
-        self.active = true;
-        self.phase = px(0.0);
-    }
+	/// Starts the flow animation (e.g. when playback begins), resetting the
+	/// phase to zero.
+	pub fn start(&mut self) {
+		self.active = true;
+		self.phase = px(0.0);
+	}
 
-    /// Stops the flow animation; wires fall back to their static style.
-    pub fn stop(&mut self) {
-        self.active = false;
-    }
+	/// Stops the flow animation; wires fall back to their static style.
+	pub fn stop(&mut self) {
+		self.active = false;
+	}
 
-    /// Advances the phase by one frame. `dt` is the elapsed frame time in
-    /// seconds; flow speed is a fixed px/s constant. No-op while inactive.
-    pub fn advance(&mut self, dt: f32) {
-        if self.active {
-            self.phase += px(FLOW_SPEED * dt);
-        }
-    }
+	/// Advances the phase by one frame. `dt` is the elapsed frame time in
+	/// seconds; flow speed is a fixed px/s constant. No-op while inactive.
+	pub fn advance(&mut self, dt: f32) {
+		if self.active {
+			self.phase += px(FLOW_SPEED * dt);
+		}
+	}
 
-    /// Returns the current dash phase to apply to wire strokes, or `None`
-    /// while inactive.
-    pub fn phase(&self) -> Option<Pixels> {
-        self.active.then_some(self.phase)
-    }
+	/// Returns the current dash phase to apply to wire strokes, or `None`
+	/// while inactive.
+	pub fn phase(&self) -> Option<Pixels> {
+		self.active.then_some(self.phase)
+	}
 }

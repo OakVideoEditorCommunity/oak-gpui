@@ -19,13 +19,13 @@
 use std::sync::Arc;
 
 use crate::{
-    App, BorderStyle, Bounds, Hsla, PathBuilder, Pixels, SharedString, Window, canvas, div, fill,
-    hsla, outline, point, prelude::*, px,
+	App, BorderStyle, Bounds, Hsla, PathBuilder, Pixels, SharedString, Window, canvas, div, fill,
+	hsla, outline, point, prelude::*, px,
 };
 
 use super::{
-    data::ClipId,
-    time::{Frame, FrameRange},
+	data::ClipId,
+	time::{Frame, FrameRange},
 };
 
 /// Screen-space width of each trim-handle hit zone, in pixels.
@@ -44,13 +44,13 @@ const PX_PER_FRAME_FALLBACK: f32 = 1.0;
 /// What the clip content area should show, per track kind and zoom.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClipContent {
-    /// Just the body color and label (also the fallback when zoomed out).
-    #[default]
-    None,
-    /// Video thumbnails — painted via [`ClipDecorator::paint_thumbnail`].
-    Thumbnails,
-    /// Audio waveform — painted via [`ClipDecorator::paint_waveform`].
-    Waveform,
+	/// Just the body color and label (also the fallback when zoomed out).
+	#[default]
+	None,
+	/// Video thumbnails — painted via [`ClipDecorator::paint_thumbnail`].
+	Thumbnails,
+	/// Audio waveform — painted via [`ClipDecorator::paint_waveform`].
+	Waveform,
 }
 
 /// Paints rich clip content (thumbnails, waveforms) into the clip body.
@@ -66,37 +66,37 @@ pub enum ClipContent {
 ///
 /// The trait is object-safe and used behind `Arc`.
 pub trait ClipDecorator: 'static {
-    /// Paints a video thumbnail filmstrip for `clip` covering
-    /// `visible_range` (the part of the clip currently on screen) into
-    /// `bounds`.
-    ///
-    /// `media_in` semantics matter here: the strip starts at
-    /// [`ClipData::media_in`](super::ClipData::media_in), so frame
-    /// `visible_range.start` of the *timeline* maps to source frame
-    /// `media_in + (visible_range.start - clip.range().start)`.
-    fn paint_thumbnail(
-        &mut self,
-        _window: &mut Window,
-        _clip: ClipId,
-        _visible_range: FrameRange,
-        _bounds: Bounds<Pixels>,
-    ) {
-        // no-op by default
-    }
+	/// Paints a video thumbnail filmstrip for `clip` covering
+	/// `visible_range` (the part of the clip currently on screen) into
+	/// `bounds`.
+	///
+	/// `media_in` semantics matter here: the strip starts at
+	/// [`ClipData::media_in`](super::ClipData::media_in), so frame
+	/// `visible_range.start` of the *timeline* maps to source frame
+	/// `media_in + (visible_range.start - clip.range().start)`.
+	fn paint_thumbnail(
+		&mut self,
+		_window: &mut Window,
+		_clip: ClipId,
+		_visible_range: FrameRange,
+		_bounds: Bounds<Pixels>,
+	) {
+		// no-op by default
+	}
 
-    /// Paints an audio waveform for `clip` covering `visible_range` into
-    /// `bounds`. Same media-time mapping as
-    /// [`ClipDecorator::paint_thumbnail`]. Typically drawn with
-    /// [`PathBuilder`](crate::PathBuilder) from cached peak data.
-    fn paint_waveform(
-        &mut self,
-        _window: &mut Window,
-        _clip: ClipId,
-        _visible_range: FrameRange,
-        _bounds: Bounds<Pixels>,
-    ) {
-        // no-op by default
-    }
+	/// Paints an audio waveform for `clip` covering `visible_range` into
+	/// `bounds`. Same media-time mapping as
+	/// [`ClipDecorator::paint_thumbnail`]. Typically drawn with
+	/// [`PathBuilder`](crate::PathBuilder) from cached peak data.
+	fn paint_waveform(
+		&mut self,
+		_window: &mut Window,
+		_clip: ClipId,
+		_visible_range: FrameRange,
+		_bounds: Bounds<Pixels>,
+	) {
+		// no-op by default
+	}
 }
 
 /// The default decorator: paints no thumbnails and no waveforms.
@@ -120,228 +120,238 @@ impl ClipDecorator for NoopClipDecorator {}
 /// constant for the limitation.
 #[derive(IntoElement)]
 pub struct ClipElement {
-    id: ClipId,
-    label: SharedString,
-    color: Hsla,
-    selected: bool,
-    enabled: bool,
-    locked: bool,
-    in_transition: Option<FrameRange>,
-    out_transition: Option<FrameRange>,
-    content: ClipContent,
-    decorator: Arc<std::sync::RwLock<dyn ClipDecorator>>,
+	id: ClipId,
+	label: SharedString,
+	color: Hsla,
+	selected: bool,
+	enabled: bool,
+	locked: bool,
+	in_transition: Option<FrameRange>,
+	out_transition: Option<FrameRange>,
+	content: ClipContent,
+	decorator: Arc<std::sync::RwLock<dyn ClipDecorator>>,
 }
 
 impl ClipElement {
-    /// Creates a clip element.
-    ///
-    /// * `id` / `label` / `color` — from the clip's
-    ///   [`ClipData`](super::ClipData); `color` is the clip color or the
-    ///   track-kind default resolved by the caller.
-    /// * `in_transition` / `out_transition` — the frame ranges (in
-    ///   *clip-local* time) of the head/tail transition wedges, if any.
-    /// * `decorator` — shared decorator instance; see [`ClipDecorator`].
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: ClipId,
-        label: SharedString,
-        color: Hsla,
-        in_transition: Option<FrameRange>,
-        out_transition: Option<FrameRange>,
-        decorator: Arc<std::sync::RwLock<dyn ClipDecorator>>,
-    ) -> Self {
-        ClipElement {
-            id,
-            label,
-            color,
-            selected: false,
-            enabled: true,
-            locked: false,
-            in_transition,
-            out_transition,
-            content: ClipContent::None,
-            decorator,
-        }
-    }
+	/// Creates a clip element.
+	///
+	/// * `id` / `label` / `color` — from the clip's
+	///   [`ClipData`](super::ClipData); `color` is the clip color or the
+	///   track-kind default resolved by the caller.
+	/// * `in_transition` / `out_transition` — the frame ranges (in
+	///   *clip-local* time) of the head/tail transition wedges, if any.
+	/// * `decorator` — shared decorator instance; see [`ClipDecorator`].
+	#[allow(clippy::too_many_arguments)]
+	pub fn new(
+		id: ClipId,
+		label: SharedString,
+		color: Hsla,
+		in_transition: Option<FrameRange>,
+		out_transition: Option<FrameRange>,
+		decorator: Arc<std::sync::RwLock<dyn ClipDecorator>>,
+	) -> Self {
+		ClipElement {
+			id,
+			label,
+			color,
+			selected: false,
+			enabled: true,
+			locked: false,
+			in_transition,
+			out_transition,
+			content: ClipContent::None,
+			decorator,
+		}
+	}
 
-    /// Builder: render in the selected state (selection outline).
-    pub fn selected(mut self, selected: bool) -> Self {
-        self.selected = selected;
-        self
-    }
+	/// Builder: render in the selected state (selection outline).
+	pub fn selected(mut self, selected: bool) -> Self {
+		self.selected = selected;
+		self
+	}
 
-    /// Builder: render in the disabled state (dimmed, no snapping target).
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
+	/// Builder: render in the disabled state (dimmed, no snapping target).
+	pub fn enabled(mut self, enabled: bool) -> Self {
+		self.enabled = enabled;
+		self
+	}
 
-    /// Builder: render as belonging to a locked track (no trim handles, no
-    /// drag cursor).
-    pub fn locked(mut self, locked: bool) -> Self {
-        self.locked = locked;
-        self
-    }
+	/// Builder: render as belonging to a locked track (no trim handles, no
+	/// drag cursor).
+	pub fn locked(mut self, locked: bool) -> Self {
+		self.locked = locked;
+		self
+	}
 
-    /// Builder: what content the decorator should paint inside the body.
-    pub fn content(mut self, content: ClipContent) -> Self {
-        self.content = content;
-        self
-    }
+	/// Builder: what content the decorator should paint inside the body.
+	pub fn content(mut self, content: ClipContent) -> Self {
+		self.content = content;
+		self
+	}
 
-    /// The clip this element renders.
-    pub fn clip_id(&self) -> ClipId {
-        self.id
-    }
+	/// The clip this element renders.
+	pub fn clip_id(&self) -> ClipId {
+		self.id
+	}
 
-    /// The trim-handle hit zone width, in pixels.
-    pub fn trim_handle_width(&self) -> Pixels {
-        crate::px(TRIM_HANDLE_WIDTH)
-    }
+	/// The trim-handle hit zone width, in pixels.
+	pub fn trim_handle_width(&self) -> Pixels {
+		crate::px(TRIM_HANDLE_WIDTH)
+	}
 
-    // TODO(implementor): register the trim-handle hit zones when the element
-    // grows interactive handles; they are currently part of the view's
-    // interaction layer.
+	// TODO(implementor): register the trim-handle hit zones when the element
+	// grows interactive handles; they are currently part of the view's
+	// interaction layer.
 }
 
 /// Paint-time snapshot of a [`ClipElement`], captured by the canvas prepaint
 /// callback and consumed by the paint callback.
 struct ClipPaint {
-    id: ClipId,
-    color: Hsla,
-    selected: bool,
-    enabled: bool,
-    locked: bool,
-    in_transition: Option<FrameRange>,
-    out_transition: Option<FrameRange>,
-    content: ClipContent,
-    decorator: Arc<std::sync::RwLock<dyn ClipDecorator>>,
+	id: ClipId,
+	color: Hsla,
+	selected: bool,
+	enabled: bool,
+	locked: bool,
+	in_transition: Option<FrameRange>,
+	out_transition: Option<FrameRange>,
+	content: ClipContent,
+	decorator: Arc<std::sync::RwLock<dyn ClipDecorator>>,
 }
 
 impl RenderOnce for ClipElement {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let ClipElement {
-            id,
-            label,
-            color,
-            selected,
-            enabled,
-            locked,
-            in_transition,
-            out_transition,
-            content,
-            decorator,
-            ..
-        } = self;
+	fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+		let ClipElement {
+			id,
+			label,
+			color,
+			selected,
+			enabled,
+			locked,
+			in_transition,
+			out_transition,
+			content,
+			decorator,
+			..
+		} = self;
 
-        // The clip body is custom-painted (body quad, transition wedges,
-        // state overlays, decorator content); the label rides in a styled
-        // overlay div so it inherits the usual text elision.
-        div()
-            .relative()
-            .size_full()
-            .child(canvas(
-                move |_bounds, _window, _cx| ClipPaint {
-                    id,
-                    color,
-                    selected,
-                    enabled,
-                    locked,
-                    in_transition,
-                    out_transition,
-                    content,
-                    decorator,
-                },
-                |bounds, paint, window, _cx| {
-                    // Body quad, dimmed when the clip is disabled.
-                    let body_color = if paint.enabled {
-                        paint.color
-                    } else {
-                        Hsla {
-                            h: paint.color.h,
-                            s: paint.color.s,
-                            l: paint.color.l,
-                            a: paint.color.a * 0.5,
-                        }
-                    };
-                    window.paint_quad(fill(bounds, body_color));
+		// The clip body is custom-painted (body quad, transition wedges,
+		// state overlays, decorator content); the label rides in a styled
+		// overlay div so it inherits the usual text elision.
+		div()
+			.relative()
+			.size_full()
+			.child(
+				canvas(
+					move |_bounds, _window, _cx| ClipPaint {
+						id,
+						color,
+						selected,
+						enabled,
+						locked,
+						in_transition,
+						out_transition,
+						content,
+						decorator,
+					},
+					|bounds, paint, window, _cx| {
+						// Body quad, dimmed when the clip is disabled.
+						let body_color = if paint.enabled {
+							paint.color
+						} else {
+							Hsla {
+								h: paint.color.h,
+								s: paint.color.s,
+								l: paint.color.l,
+								a: paint.color.a * 0.5,
+							}
+						};
+						window.paint_quad(fill(bounds, body_color));
 
-                    // Transition wedges: triangles tapering into the clip
-                    // from each edge, capped at 40% of the body width so tiny
-                    // clips don't vanish.
-                    let max_wedge = bounds.size.width.0 * 0.4;
-                    if let Some(range) = paint.in_transition {
-                        let w = (range.len().0 as f32 * PX_PER_FRAME_FALLBACK).min(max_wedge);
-                        if w > 0.0 {
-                            let mut path = PathBuilder::fill();
-                            path.move_to(point(bounds.left(), bounds.top()));
-                            path.line_to(point(bounds.left() + px(w), bounds.top()));
-                            path.line_to(point(bounds.left(), bounds.bottom()));
-                            path.close();
-                            window.paint_path(path.build().expect("wedge path is valid"), paint.color);
-                        }
-                    }
-                    if let Some(range) = paint.out_transition {
-                        let w = (range.len().0 as f32 * PX_PER_FRAME_FALLBACK).min(max_wedge);
-                        if w > 0.0 {
-                            let mut path = PathBuilder::fill();
-                            path.move_to(point(bounds.right(), bounds.top()));
-                            path.line_to(point(bounds.right() - px(w), bounds.top()));
-                            path.line_to(point(bounds.right(), bounds.bottom()));
-                            path.close();
-                            window.paint_path(path.build().expect("wedge path is valid"), paint.color);
-                        }
-                    }
+						// Transition wedges: triangles tapering into the clip
+						// from each edge, capped at 40% of the body width so tiny
+						// clips don't vanish.
+						let max_wedge = bounds.size.width.0 * 0.4;
+						if let Some(range) = paint.in_transition {
+							let w = (range.len().0 as f32 * PX_PER_FRAME_FALLBACK).min(max_wedge);
+							if w > 0.0 {
+								let mut path = PathBuilder::fill();
+								path.move_to(point(bounds.left(), bounds.top()));
+								path.line_to(point(bounds.left() + px(w), bounds.top()));
+								path.line_to(point(bounds.left(), bounds.bottom()));
+								path.close();
+								window.paint_path(
+									path.build().expect("wedge path is valid"),
+									paint.color,
+								);
+							}
+						}
+						if let Some(range) = paint.out_transition {
+							let w = (range.len().0 as f32 * PX_PER_FRAME_FALLBACK).min(max_wedge);
+							if w > 0.0 {
+								let mut path = PathBuilder::fill();
+								path.move_to(point(bounds.right(), bounds.top()));
+								path.line_to(point(bounds.right() - px(w), bounds.top()));
+								path.line_to(point(bounds.right(), bounds.bottom()));
+								path.close();
+								window.paint_path(
+									path.build().expect("wedge path is valid"),
+									paint.color,
+								);
+							}
+						}
 
-                    // State overlays, in back-to-front order.
-                    if !paint.enabled {
-                        window.paint_quad(fill(bounds, hsla(0., 0., 0.05, 0.55)));
-                    }
-                    if paint.locked {
-                        window.paint_quad(fill(bounds, hsla(0., 0., 0.1, 0.25)));
-                    }
+						// State overlays, in back-to-front order.
+						if !paint.enabled {
+							window.paint_quad(fill(bounds, hsla(0., 0., 0.05, 0.55)));
+						}
+						if paint.locked {
+							window.paint_quad(fill(bounds, hsla(0., 0., 0.1, 0.25)));
+						}
 
-                    // Rich content via the decorator, scoped to the frames
-                    // visible inside this body.
-                    let visible_range = FrameRange::new(
-                        Frame::ZERO,
-                        Frame((bounds.size.width.0 / PX_PER_FRAME_FALLBACK) as i64),
-                    );
-                    match paint.content {
-                        ClipContent::Thumbnails => paint
-                            .decorator
-                            .write()
-                            .expect("clip decorator lock is not poisoned")
-                            .paint_thumbnail(window, paint.id, visible_range, bounds),
-                        ClipContent::Waveform => paint
-                            .decorator
-                            .write()
-                            .expect("clip decorator lock is not poisoned")
-                            .paint_waveform(window, paint.id, visible_range, bounds),
-                        ClipContent::None => {}
-                    }
+						// Rich content via the decorator, scoped to the frames
+						// visible inside this body.
+						let visible_range = FrameRange::new(
+							Frame::ZERO,
+							Frame((bounds.size.width.0 / PX_PER_FRAME_FALLBACK) as i64),
+						);
+						match paint.content {
+							ClipContent::Thumbnails => paint
+								.decorator
+								.write()
+								.expect("clip decorator lock is not poisoned")
+								.paint_thumbnail(window, paint.id, visible_range, bounds),
+							ClipContent::Waveform => paint
+								.decorator
+								.write()
+								.expect("clip decorator lock is not poisoned")
+								.paint_waveform(window, paint.id, visible_range, bounds),
+							ClipContent::None => {}
+						}
 
-                    // Selection outline on top of everything.
-                    if paint.selected {
-                        window.paint_quad(
-                            outline(bounds, hsla(0.6, 0.8, 0.6, 1.), BorderStyle::Solid),
-                        );
-                    }
-                },
-            )
-            .size_full())
-            .child(
-                div()
-                    .absolute()
-                    .left(px(4.))
-                    .top(px(4.))
-                    .right(px(4.))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .text_size(px(11.))
-                    .text_color(hsla(0., 0., 1., 0.92))
-                    .child(label),
-            )
-    }
+						// Selection outline on top of everything.
+						if paint.selected {
+							window.paint_quad(outline(
+								bounds,
+								hsla(0.6, 0.8, 0.6, 1.),
+								BorderStyle::Solid,
+							));
+						}
+					},
+				)
+				.size_full(),
+			)
+			.child(
+				div()
+					.absolute()
+					.left(px(4.))
+					.top(px(4.))
+					.right(px(4.))
+					.overflow_hidden()
+					.whitespace_nowrap()
+					.text_ellipsis()
+					.text_size(px(11.))
+					.text_color(hsla(0., 0., 1., 0.92))
+					.child(label),
+			)
+	}
 }

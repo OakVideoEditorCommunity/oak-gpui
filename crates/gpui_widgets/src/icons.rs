@@ -24,11 +24,11 @@ impl Global for IconResolverGlobal {}
 /// Registers the host's icon resolver. Call once at startup, before any
 /// window renders.
 pub fn set_resolver(resolver: IconResolver, cx: &mut App) {
-    cx.set_global(IconResolverGlobal(resolver));
+	cx.set_global(IconResolverGlobal(resolver));
 }
 
 /// The file path of the named icon in the current theme, if resolvable.
 pub fn path(name: &str, cx: &App) -> Option<PathBuf> {
-    cx.try_global::<IconResolverGlobal>()
-        .and_then(|global| (global.0)(name, cx))
+	cx.try_global::<IconResolverGlobal>()
+		.and_then(|global| (global.0)(name, cx))
 }

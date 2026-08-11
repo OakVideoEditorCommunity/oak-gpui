@@ -31,56 +31,56 @@ pub type StringTable = HashMap<String, String>;
 
 /// The installed table, or `None` (built-in defaults) when unset.
 fn table() -> &'static RwLock<Option<StringTable>> {
-    static TABLE: OnceLock<RwLock<Option<StringTable>>> = OnceLock::new();
-    TABLE.get_or_init(|| RwLock::new(None))
+	static TABLE: OnceLock<RwLock<Option<StringTable>>> = OnceLock::new();
+	TABLE.get_or_init(|| RwLock::new(None))
 }
 
 /// Installs `strings` as the string-table override, replacing any previously
 /// installed table wholesale.
 pub fn set_table(strings: StringTable) {
-    *table().write().unwrap() = Some(strings);
+	*table().write().unwrap() = Some(strings);
 }
 
 /// Removes the override so every string falls back to its built-in default.
 pub fn clear_table() {
-    *table().write().unwrap() = None;
+	*table().write().unwrap() = None;
 }
 
 /// Returns the localized string for `key`, or `default` when the installed
 /// table has no entry for it.
 pub fn tr(key: &str, default: impl Into<SharedString>) -> SharedString {
-    if let Some(value) = table()
-        .read()
-        .unwrap()
-        .as_ref()
-        .and_then(|strings| strings.get(key))
-    {
-        SharedString::from(value.clone())
-    } else {
-        default.into()
-    }
+	if let Some(value) = table()
+		.read()
+		.unwrap()
+		.as_ref()
+		.and_then(|strings| strings.get(key))
+	{
+		SharedString::from(value.clone())
+	} else {
+		default.into()
+	}
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+	use super::*;
 
-    #[test]
-    fn missing_table_uses_defaults() {
-        clear_table();
-        assert_eq!(tr("viewer.safe_frames", "安全框"), "安全框");
-        assert_eq!(tr("viewer.zoom", "缩放"), "缩放");
-    }
+	#[test]
+	fn missing_table_uses_defaults() {
+		clear_table();
+		assert_eq!(tr("viewer.safe_frames", "安全框"), "安全框");
+		assert_eq!(tr("viewer.zoom", "缩放"), "缩放");
+	}
 
-    #[test]
-    fn installed_table_overrides_defaults() {
-        let mut table = StringTable::new();
-        table.insert("viewer.safe_frames".into(), "Safe Frames".into());
-        set_table(table);
-        assert_eq!(tr("viewer.safe_frames", "安全框"), "Safe Frames");
-        // Keys not in the table keep their defaults.
-        assert_eq!(tr("viewer.zoom", "缩放"), "缩放");
-        clear_table();
-        assert_eq!(tr("viewer.safe_frames", "安全框"), "安全框");
-    }
+	#[test]
+	fn installed_table_overrides_defaults() {
+		let mut table = StringTable::new();
+		table.insert("viewer.safe_frames".into(), "Safe Frames".into());
+		set_table(table);
+		assert_eq!(tr("viewer.safe_frames", "安全框"), "Safe Frames");
+		// Keys not in the table keep their defaults.
+		assert_eq!(tr("viewer.zoom", "缩放"), "缩放");
+		clear_table();
+		assert_eq!(tr("viewer.safe_frames", "安全框"), "安全框");
+	}
 }

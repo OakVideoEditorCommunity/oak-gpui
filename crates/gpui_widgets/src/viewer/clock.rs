@@ -9,10 +9,10 @@ use gpui::timeline::{Frame, FrameRate};
 
 /// A read-only view of the engine's playback clock.
 pub trait PlaybackClock: 'static {
-    /// The current playhead frame.
-    fn current_frame(&self) -> Frame;
-    /// Whether playback is running.
-    fn is_playing(&self) -> bool;
-    /// The sequence's frame rate.
-    fn frame_rate(&self) -> FrameRate;
+	/// The current playhead frame.
+	fn current_frame(&self) -> Frame;
+	/// Whether playback is running.
+	fn is_playing(&self) -> bool;
+	/// The sequence's frame rate.
+	fn frame_rate(&self) -> FrameRate;
 }

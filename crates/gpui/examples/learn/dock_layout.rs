@@ -17,12 +17,12 @@ mod example_prelude;
 
 use example_prelude::init_example;
 use gpui::dock::{
-    DockArea, DockEvent, DockLayoutState, DockPanel, PanelEvent, PanelHandle, PanelId,
-    PanelRegistry,
+	DockArea, DockEvent, DockLayoutState, DockPanel, PanelEvent, PanelHandle, PanelId,
+	PanelRegistry,
 };
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, EventEmitter, Render, SharedString, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, size,
+	AnyElement, App, Bounds, Context, Entity, EventEmitter, Render, SharedString, Window,
+	WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 use std::sync::Arc;
 
@@ -40,41 +40,41 @@ const TIMELINE_ID: PanelId = PanelId::new(4);
 
 /// Shared shape of the demo placeholders: a labeled box.
 struct PlaceholderPanel {
-    id: PanelId,
-    title: &'static str,
+	id: PanelId,
+	title: &'static str,
 }
 
 impl PlaceholderPanel {
-    fn new(id: PanelId, title: &'static str) -> Self {
-        Self { id, title }
-    }
+	fn new(id: PanelId, title: &'static str) -> Self {
+		Self { id, title }
+	}
 }
 
 impl Render for PlaceholderPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(format!("{} (placeholder)", self.title))
-    }
+	fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+		div()
+			.size_full()
+			.flex()
+			.items_center()
+			.justify_center()
+			.child(format!("{} (placeholder)", self.title))
+	}
 }
 
 impl EventEmitter<PanelEvent> for PlaceholderPanel {}
 
 impl DockPanel for PlaceholderPanel {
-    fn panel_id(&self) -> PanelId {
-        self.id
-    }
+	fn panel_id(&self) -> PanelId {
+		self.id
+	}
 
-    fn title(&self, _cx: &App) -> SharedString {
-        self.title.into()
-    }
+	fn title(&self, _cx: &App) -> SharedString {
+		self.title.into()
+	}
 
-    fn tab_content(&self, _cx: &App) -> AnyElement {
-        div().child(self.title).into_any_element()
-    }
+	fn tab_content(&self, _cx: &App) -> AnyElement {
+		div().child(self.title).into_any_element()
+	}
 }
 
 // ============================================================================
@@ -84,29 +84,29 @@ impl DockPanel for PlaceholderPanel {
 struct DemoPanelRegistry;
 
 impl PanelRegistry for DemoPanelRegistry {
-    fn panel_key(&self, id: PanelId) -> Option<String> {
-        match id {
-            PROJECT_BIN_ID => Some("project-bin".into()),
-            VIEWER_ID => Some("viewer".into()),
-            INSPECTOR_ID => Some("inspector".into()),
-            TIMELINE_ID => Some("timeline".into()),
-            _ => None,
-        }
-    }
+	fn panel_key(&self, id: PanelId) -> Option<String> {
+		match id {
+			PROJECT_BIN_ID => Some("project-bin".into()),
+			VIEWER_ID => Some("viewer".into()),
+			INSPECTOR_ID => Some("inspector".into()),
+			TIMELINE_ID => Some("timeline".into()),
+			_ => None,
+		}
+	}
 
-    fn build_panel(&self, key: &str, _window: &mut Window, cx: &mut App) -> Option<PanelHandle> {
-        let (id, title) = match key {
-            "project-bin" => (PROJECT_BIN_ID, "Project Bin"),
-            "viewer" => (VIEWER_ID, "Viewer"),
-            "inspector" => (INSPECTOR_ID, "Inspector"),
-            "timeline" => (TIMELINE_ID, "Timeline"),
-            _ => return None,
-        };
-        Some(PanelHandle::new(
-            cx.new(|_| PlaceholderPanel::new(id, title)),
-            cx,
-        ))
-    }
+	fn build_panel(&self, key: &str, _window: &mut Window, cx: &mut App) -> Option<PanelHandle> {
+		let (id, title) = match key {
+			"project-bin" => (PROJECT_BIN_ID, "Project Bin"),
+			"viewer" => (VIEWER_ID, "Viewer"),
+			"inspector" => (INSPECTOR_ID, "Inspector"),
+			"timeline" => (TIMELINE_ID, "Timeline"),
+			_ => return None,
+		};
+		Some(PanelHandle::new(
+			cx.new(|_| PlaceholderPanel::new(id, title)),
+			cx,
+		))
+	}
 }
 
 // ============================================================================
@@ -114,57 +114,60 @@ impl PanelRegistry for DemoPanelRegistry {
 // ============================================================================
 
 struct DockLayoutExample {
-    dock: Entity<DockArea>,
+	dock: Entity<DockArea>,
 }
 
 impl DockLayoutExample {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let dock = cx.new(|cx| DockArea::new(cx).with_registry(Arc::new(DemoPanelRegistry)));
+	fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+		let dock = cx.new(|cx| DockArea::new(cx).with_registry(Arc::new(DemoPanelRegistry)));
 
-        // Seed a default workspace. Once the dock is implemented this will
-        // instead attempt `restore_state` from a persisted `DockLayoutState`
-        // first, falling back to this default when none exists.
-        let panels: Vec<PanelHandle> = ["project-bin", "viewer", "inspector", "timeline"]
-            .into_iter()
-            .filter_map(|key| DemoPanelRegistry.build_panel(key, window, cx))
-            .collect();
-        dock.update(cx, |dock, cx| {
-            for panel in panels {
-                dock.add_panel(panel, None, cx);
-            }
-        });
+		// Seed a default workspace. Once the dock is implemented this will
+		// instead attempt `restore_state` from a persisted `DockLayoutState`
+		// first, falling back to this default when none exists.
+		let panels: Vec<PanelHandle> = ["project-bin", "viewer", "inspector", "timeline"]
+			.into_iter()
+			.filter_map(|key| DemoPanelRegistry.build_panel(key, window, cx))
+			.collect();
+		dock.update(cx, |dock, cx| {
+			for panel in panels {
+				dock.add_panel(panel, None, cx);
+			}
+		});
 
-        // Autosave hook: persist on every layout change.
-        cx.subscribe(&dock, |_this, dock: Entity<DockArea>, event: &DockEvent, cx| {
-            if let DockEvent::LayoutChanged = event {
-                let _state: DockLayoutState = dock.read(cx).save_state();
-                todo!("serialize `_state` with serde_json and write it to the app data dir");
-            }
-        })
-        .detach();
+		// Autosave hook: persist on every layout change.
+		cx.subscribe(
+			&dock,
+			|_this, dock: Entity<DockArea>, event: &DockEvent, cx| {
+				if let DockEvent::LayoutChanged = event {
+					let _state: DockLayoutState = dock.read(cx).save_state();
+					todo!("serialize `_state` with serde_json and write it to the app data dir");
+				}
+			},
+		)
+		.detach();
 
-        Self { dock }
-    }
+		Self { dock }
+	}
 }
 
 impl Render for DockLayoutExample {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.dock.clone())
-    }
+	fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+		div().size_full().child(self.dock.clone())
+	}
 }
 
 fn main() {
-    gpui_platform::application().run(|cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| DockLayoutExample::new(window, cx)),
-        )
-        .expect("Failed to open window");
+	gpui_platform::application().run(|cx: &mut App| {
+		let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
+		cx.open_window(
+			WindowOptions {
+				window_bounds: Some(WindowBounds::Windowed(bounds)),
+				..Default::default()
+			},
+			|window, cx| cx.new(|cx| DockLayoutExample::new(window, cx)),
+		)
+		.expect("Failed to open window");
 
-        init_example(cx, "Dock Layout");
-    });
+		init_example(cx, "Dock Layout");
+	});
 }

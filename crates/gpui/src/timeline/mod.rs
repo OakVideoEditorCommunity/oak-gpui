@@ -63,8 +63,8 @@ pub mod playhead;
 pub mod ruler;
 pub mod state;
 pub mod time;
-pub mod track_header;
 pub mod timeline_view;
+pub mod track_header;
 
 pub use clip::*;
 pub use data::*;
@@ -72,5 +72,5 @@ pub use playhead::*;
 pub use ruler::*;
 pub use state::*;
 pub use time::*;
-pub use track_header::*;
 pub use timeline_view::*;
+pub use track_header::*;
