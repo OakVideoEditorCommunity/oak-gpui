@@ -92,7 +92,7 @@ pub(crate) struct TabBar {
 impl TabBar {
 	/// Minimum width a tab is allowed to shrink to before the strip starts
 	/// scrolling instead.
-	pub(crate) const MIN_TAB_WIDTH: Pixels = Pixels(80.0);
+	pub(crate) const MIN_TAB_WIDTH: Pixels = Pixels(64.0);
 
 	/// Creates a strip for the given tabs; `active` is clamped into range.
 	pub(crate) fn new(tabs: Vec<PanelId>, active: usize) -> Self {
@@ -216,7 +216,7 @@ impl Render for TabBar {
 			.flex()
 			.flex_row()
 			.items_center()
-			.h(px(32.0))
+			.h(px(26.0))
 			.w_full()
 			.overflow_hidden()
 			.on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
@@ -277,6 +277,7 @@ impl Render for TabBar {
 				.flex_none()
 				.h_full()
 				.cursor_pointer()
+				.text_sm()
 				.bg(if active {
 					colors.selected
 				} else {

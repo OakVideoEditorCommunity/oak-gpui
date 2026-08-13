@@ -227,6 +227,8 @@ pub struct TimelineView<D: TimelineDataSource> {
 	pub state: TimelineState,
 	/// The set of tracks selected via their headers.
 	selected_tracks: BTreeSet<usize>,
+	/// Rich clip content (thumbnails / waveforms), replaced by the host.
+	decorator: std::sync::Arc<std::sync::RwLock<dyn ClipDecorator>>,
 	focus_handle: FocusHandle,
 }
 
@@ -253,8 +255,25 @@ impl<D: TimelineDataSource> TimelineView<D> {
 			source,
 			state: TimelineState::new(),
 			selected_tracks: BTreeSet::new(),
+			decorator: std::sync::Arc::new(std::sync::RwLock::new(NoopClipDecorator)),
 			focus_handle,
 		}
+	}
+
+	/// Builder: installs the host's rich-clip decorator (M12 P4 — Oak's
+	/// waveform decorator). The default is the no-op decorator.
+	pub fn clip_decorator(
+		mut self,
+		decorator: std::sync::Arc<std::sync::RwLock<dyn ClipDecorator>>,
+	) -> Self {
+		self.decorator = decorator;
+		self
+	}
+
+	/// Replaces the clip decorator after construction (the app wires its
+	/// waveform cache once the engine is up).
+	pub fn set_clip_decorator(&mut self, decorator: std::sync::Arc<std::sync::RwLock<dyn ClipDecorator>>) {
+		self.decorator = decorator;
 	}
 
 	/// The set of tracks selected via header clicks.
@@ -731,7 +750,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 		// (the clip-area child iterator consumes `rows` below).
 		let marquee_rows = Arc::new(rows.clone());
 		let playhead_x = state.point_at_frame(state.playhead).0;
-		let decorator: Arc<RwLock<dyn ClipDecorator>> = Arc::new(RwLock::new(NoopClipDecorator));
+		let decorator = self.decorator.clone();
 
 		let ruler = div()
 			.flex_row()

@@ -266,7 +266,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			.items_center()
 			.gap_2()
 			.px_2()
-			.py_1()
+			.py_0p5()
 			.bg(colors.container)
 			.child(transport_button(
 				"gpui-widgets-viewer-in",
@@ -362,7 +362,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 					);
 				}),
 			))
-			.child(div().px_2().text_color(colors.text).child(timecode))
+			.child(div().px_2().text_xs().text_color(colors.text).child(timecode))
 			.child(div().flex_1())
 			.child(button(
 				"gpui-widgets-viewer-safe",
@@ -413,8 +413,8 @@ fn transport_button(
 	let mut el = div()
 		.id(id)
 		.debug_selector(move || id.into())
-		.w(px(24.0))
-		.h(px(24.0))
+		.w(px(22.0))
+		.h(px(22.0))
 		.flex()
 		.items_center()
 		.justify_center()
@@ -471,7 +471,7 @@ fn button(
 		.id(id)
 		.debug_selector(move || id.into())
 		.px_2()
-		.py_1()
+		.py_0p5()
 		.rounded_md()
 		.cursor_pointer()
 		.hover(|style| style.bg(gpui::colors::Colors::dark().selected))

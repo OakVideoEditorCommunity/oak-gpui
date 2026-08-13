@@ -229,7 +229,7 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 			.bg(colors.container)
 			.child(toggle_button(
 				"gpui-widgets-explorer-tree",
-				"树",
+				crate::i18n::tr("explorer.tree", "树"),
 				self.view == ExplorerView::Tree,
 				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
@@ -238,7 +238,7 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 			))
 			.child(toggle_button(
 				"gpui-widgets-explorer-icons",
-				"图标",
+				crate::i18n::tr("explorer.icons", "图标"),
 				self.view == ExplorerView::Icons,
 				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
@@ -415,7 +415,7 @@ fn this_expanded(expanded: &HashSet<u64>, id: u64) -> bool {
 /// A small toggle button for the view switcher.
 fn toggle_button(
 	id: &'static str,
-	label: &'static str,
+	label: impl Into<gpui::SharedString>,
 	active: bool,
 	colors: &gpui::colors::Colors,
 	on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -438,7 +438,7 @@ fn toggle_button(
 		})
 		.cursor_pointer()
 		.on_click(on_click)
-		.child(label)
+		.child(label.into())
 }
 
 #[cfg(test)]

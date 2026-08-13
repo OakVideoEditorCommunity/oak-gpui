@@ -3,7 +3,9 @@
 //!
 //! The pure data model lives in [`model`]; the views here render it. Keyboard
 //! navigation (up/down/enter/escape) works while the popup is focused; items
-//! with submenus open them on hover to the right of the parent menu.
+//! with submenus open them on hover to the right of the parent menu. With a
+//! menu open, hovering another top-level title switches to that menu (menu
+//! scrubbing), like a native menu bar.
 //! Activating an item emits [`MenuBarEvent::Triggered`] /
 //! [`ContextMenuEvent::Triggered`] as a request.
 
@@ -11,14 +13,14 @@ pub mod model;
 
 use gpui::{
 	Anchor, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, Focusable,
-	KeyDownEvent, MouseButton, MouseUpEvent, Pixels, Point, Render, SharedString, Window, anchored,
-	colors::DefaultColors, deferred, div, point, prelude::*, px,
+	KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, SharedString,
+	Window, anchored, colors::DefaultColors, deferred, div, point, prelude::*, px,
 };
 
 pub use model::{Menu, MenuItem};
 
 /// The height of one menu row, used for submenu positioning estimates.
-const ROW_HEIGHT: f32 = 26.0;
+const ROW_HEIGHT: f32 = 22.0;
 
 /// A fully transparent color (for un-hovered rows).
 fn transparent() -> gpui::Rgba {
@@ -222,6 +224,7 @@ impl Render for MenuBar {
 			.flex()
 			.items_center()
 			.px_2()
+			.py_0p5()
 			.gap_1()
 			.bg(colors.container);
 
@@ -233,8 +236,9 @@ impl Render for MenuBar {
 						format!("gpui-widgets-menu-title-{}", self.control),
 						index,
 					))
+					.debug_selector(move || format!("menu-title-{index}").into())
 					.px_2()
-					.py_1()
+					.py_0p5()
 					.rounded_md()
 					.bg(if is_open {
 						colors.selected
@@ -246,6 +250,7 @@ impl Render for MenuBar {
 					} else {
 						colors.text
 					})
+					.text_xs()
 					.cursor_pointer()
 					.on_mouse_down(
 						MouseButton::Left,
@@ -253,6 +258,15 @@ impl Render for MenuBar {
 							this.was_open_at_down = this.open.is_some();
 						}),
 					)
+					.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+						// Menu scrubbing: with a menu open, moving over another
+						// title switches the open menu to it (re-anchoring the
+						// popup under the pointer). Nothing happens while no
+						// menu is open, so the titles only open on click.
+						if this.open.is_some() {
+							this.open_menu(index, event.position, cx);
+						}
+					}))
 					.on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
 						if this.was_open_at_down {
 							this.close_menu(cx);
@@ -341,7 +355,7 @@ impl Render for MenuBar {
 					}),
 					cx.listener(|_this, _item: &MenuHovered, _window, _cx| {}),
 				);
-				let width = f32::from(menu_width_estimate());
+				let width = f32::from(menu_width(&entry.menu));
 				// Align the submenu with the hovered row (one row height per
 				// item) so it opens next to the item, not the first row.
 				let top = ROW_HEIGHT * (hovered as f32 + 1.0);
@@ -520,12 +534,13 @@ fn menu_popup_element(
 	let mut column = div()
 		.id(ElementId::named_usize("gpui-widgets-menu-popup", control))
 		.debug_selector(move || debug_key.into())
-		.min_w(px(180.0))
+		.w(menu_width(menu))
 		.rounded_md()
 		.border_1()
 		.border_color(colors.border)
 		.bg(colors.container)
 		.py_1()
+		.text_xs()
 		.flex()
 		.flex_col();
 
@@ -612,9 +627,29 @@ fn menu_popup_element(
 	column
 }
 
-/// A rough menu width estimate for submenu placement (matches `min_w`).
-fn menu_width_estimate() -> Pixels {
-	px(180.0)
+/// A menu popup's content-aware width: the longest label (CJK glyphs
+/// count double) plus the checkmark, submenu-arrow and shortcut columns,
+/// clamped to a sane range. The popup sizes itself with this and the
+/// submenu x-offset reads the same value, so the two never disagree.
+fn menu_width(menu: &Menu) -> Pixels {
+	let mut max_units = 0.0f32;
+	for item in &menu.items {
+		if Menu::is_separator(item) {
+			continue;
+		}
+		let label: f32 = item
+			.label
+			.chars()
+			.map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
+			.sum();
+		let shortcut = item
+			.shortcut
+			.as_ref()
+			.map(|s| s.chars().count() as f32 + 2.0)
+			.unwrap_or(0.0);
+		max_units = max_units.max(label + shortcut);
+	}
+	(px(16.0 + 48.0) + px(max_units * 7.0)).clamp(px(96.0), px(360.0))
 }
 
 /// Find the menu item at a raw index in the currently open menu.
@@ -676,6 +711,27 @@ mod tests {
 				MenuItem::new(23, "Preferences…"),
 			]),
 		)]
+	}
+
+	/// Two top-level menus ("File" then "View"), for scrubbing between titles.
+	fn demo_entries_two() -> Vec<MenuBarEntry> {
+		vec![
+			MenuBarEntry::new(
+				"File",
+				Menu::new(vec![
+					MenuItem::new(10, "Open…").with_shortcut("⌘O"),
+					MenuItem::new(11, "Save").with_shortcut("⌘S"),
+					MenuItem::new(12, "Quit").separated(),
+				]),
+			),
+			MenuBarEntry::new(
+				"View",
+				Menu::new(vec![
+					MenuItem::new(20, "Language"),
+					MenuItem::new(23, "Preferences…"),
+				]),
+			),
+		]
 	}
 
 	struct Host {
@@ -818,6 +874,66 @@ mod tests {
 				.any(|e| matches!(e, MenuBarEvent::MenuClosed { .. }))
 		});
 		assert!(closed);
+	}
+
+	/// Menu scrubbing: while a menu is open, moving over another top-level
+	/// title switches the open menu to it (and re-anchors the popup under that
+	/// title). With nothing open, hovering does not open a menu.
+	#[gpui::test]
+	async fn hovering_another_title_switches_the_open_menu(cx: &mut TestAppContext) {
+		let (cx, host) = make_bar_with(cx, demo_entries_two());
+		// Open the first menu ("File").
+		cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+		let popup = cx.debug_bounds("menu-popup").expect("first menu open");
+
+		// Move over the second title ("View"): the open menu must switch to it.
+		let second_title = cx
+			.debug_bounds("menu-title-1")
+			.expect("second title rendered");
+		cx.simulate_mouse_move(second_title.center(), None, Modifiers::none());
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+
+		let switched = cx.read(|app| {
+			host.read(app)
+				.events
+				.iter()
+				.any(|e| matches!(e, MenuBarEvent::MenuOpened { index: 1, .. }))
+		});
+		assert!(
+			switched,
+			"hovering the second title should switch the open menu"
+		);
+		let moved = cx.debug_bounds("menu-popup").expect("popup stays open");
+		assert!(
+			moved.left() > popup.left() + px(10.0),
+			"the popup follows the hovered title"
+		);
+
+		// Hovering back over the first title switches back.
+		let first_title = cx
+			.debug_bounds("menu-title-0")
+			.expect("first title rendered");
+		cx.simulate_mouse_move(first_title.center(), None, Modifiers::none());
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+		let switched_back = cx.read(|app| {
+			host.read(app)
+				.events
+				.iter()
+				.filter(|e| matches!(e, MenuBarEvent::MenuOpened { index: 0, .. }))
+				.count()
+				>= 2
+		});
+		assert!(switched_back, "hovering the first title switches back");
 	}
 
 	#[gpui::test]
