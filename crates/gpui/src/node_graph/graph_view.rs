@@ -1011,16 +1011,19 @@ impl<D: NodeGraphDataSource + 'static> Render for NodeGraphView<D> {
 			.on_pinch(cx.listener(|this, event: &PinchEvent, _window, cx| {
 				this.on_scroll_or_pinch(event.position, 1.0 + event.delta, cx);
 			}))
-			.child(canvas(
-				move |bounds, _window, cx| {
-					entity.update(cx, |this, cx| {
-						this.viewport = bounds;
-						this.build_draw(cx)
-					})
-				},
-				move |bounds, draw: GraphDraw, window, cx| {
-					NodeGraphView::<D>::paint_draw(&draw, bounds, window, cx);
-				},
-			))
+			.child(
+				canvas(
+					move |bounds, _window, cx| {
+						entity.update(cx, |this, cx| {
+							this.viewport = bounds;
+							this.build_draw(cx)
+						})
+					},
+					move |bounds, draw: GraphDraw, window, cx| {
+						NodeGraphView::<D>::paint_draw(&draw, bounds, window, cx);
+					},
+				)
+				.size_full(),
+			)
 	}
 }

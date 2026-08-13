@@ -282,6 +282,7 @@ impl RenderOnce for TimelineRuler {
 				}
 			},
 		)
+		.size_full()
 	}
 }
 

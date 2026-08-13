@@ -94,6 +94,19 @@ impl TabBar {
 	/// scrolling instead.
 	pub(crate) const MIN_TAB_WIDTH: Pixels = Pixels(64.0);
 
+	/// Estimated rendered width of a tab for its title: tabs size to their
+	/// content (the design shows full `<面板>·<名称>` labels), so drag
+	/// hit-testing estimates each tab's width from the title — CJK glyphs are
+	/// full-width, ASCII roughly half — plus the horizontal padding. Only the
+	/// cached drag geometry uses this; the layout itself measures the text.
+	fn estimated_width(title: &str) -> Pixels {
+		let units: f32 = title
+			.chars()
+			.map(|ch| if ch.is_ascii() { 0.55 } else { 1.0 })
+			.sum();
+		Pixels((units * 13.0 + 20.0).max(Self::MIN_TAB_WIDTH.0))
+	}
+
 	/// Creates a strip for the given tabs; `active` is clamped into range.
 	pub(crate) fn new(tabs: Vec<PanelId>, active: usize) -> Self {
 		Self {
@@ -201,16 +214,23 @@ impl Render for TabBar {
 		let colors = cx.default_colors().clone();
 
 		// Recompute per-tab geometry from the current order and scroll offset.
-		self.geometry = self
-			.tabs
-			.iter()
-			.enumerate()
-			.map(|(index, &panel)| TabGeometry {
-				panel,
-				x: Pixels(index as f32 * Self::MIN_TAB_WIDTH.0 - self.scroll_offset.0),
-				width: Self::MIN_TAB_WIDTH,
-			})
-			.collect();
+		// Tabs are content-sized, so accumulate the estimated widths.
+		{
+			let mut x = -self.scroll_offset.0;
+			self.geometry = self
+				.tabs
+				.iter()
+				.enumerate()
+				.map(|(index, &panel)| {
+					let width = Self::estimated_width(
+						self.titles.get(index).map(|t| t.as_ref()).unwrap_or(""),
+					);
+					let tab = TabGeometry { panel, x: Pixels(x), width };
+					x += width.0;
+					tab
+				})
+				.collect();
+		}
 
 		let mut root = div()
 			.flex()
@@ -273,9 +293,12 @@ impl Render for TabBar {
 
 			let mut tab = div()
 				.id(ElementId::named_usize("dock-tab", panel.raw() as usize))
-				.w(px(Self::MIN_TAB_WIDTH.0))
+				.min_w(px(Self::MIN_TAB_WIDTH.0))
+				.px_2()
 				.flex_none()
 				.h_full()
+				.overflow_hidden()
+				.whitespace_nowrap()
 				.cursor_pointer()
 				.text_sm()
 				.bg(if active {

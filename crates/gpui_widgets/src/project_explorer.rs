@@ -310,6 +310,11 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 						} else {
 							""
 						}))
+						// Small type glyph: a folder box for directories, a
+						// document for media files. The widget crate ships no
+						// folder/file SVGs, so the rows use text glyphs (the
+						// host's icon set is timeline/viewer tools only).
+						.child(div().w(px(16.0)).child(if entry.is_dir { "▣" } else { "▤" }))
 						.child(div().child(entry.name.clone()));
 					if !is_selected {
 						row = row.hover(|style| style.bg(Hsla::from(colors.selected).opacity(0.3)));

@@ -753,6 +753,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 		let decorator = self.decorator.clone();
 
 		let ruler = div()
+			.flex()
 			.flex_row()
 			.h(px(32.))
 			.flex_shrink_0()
@@ -781,6 +782,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 		let headers = div()
 			.w(px(HEADER_WIDTH))
 			.flex_shrink_0()
+			.flex()
 			.flex_col()
 			.id("timeline-track-headers")
 			.on_drag_move(cx.listener(
@@ -863,6 +865,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 			.id("timeline-clip-area")
 			.relative()
 			.overflow_hidden()
+			.flex()
 			.flex_col()
 			.on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
 				if event.modifiers.control || event.modifiers.platform {
@@ -1068,9 +1071,15 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 						div()
 							.absolute()
 							.left(px(x0))
-							.top(px(0.))
+							// Slight vertical inset: the design's clips read
+							// as rounded bars with a small gap between rows,
+							// not full-height slabs. The corners are rounded
+							// in ClipElement's painted quads (content masks
+							// are rectangular only).
+							.top(px(2.))
 							.w(px(width))
-							.h(px(clip_height))
+							.h(px((clip_height - 4.0).max(1.0)))
+							.overflow_hidden()
 							.id(ElementId::named_usize("timeline-clip", clip.id.0 as usize))
 							.on_drag(
 								Arc::new(RwLock::new(ClipDrag {
@@ -1096,6 +1105,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 
 		div().size_full().flex().flex_col().child(ruler).child(
 			div()
+				.flex()
 				.flex_row()
 				.flex_1()
 				.relative()

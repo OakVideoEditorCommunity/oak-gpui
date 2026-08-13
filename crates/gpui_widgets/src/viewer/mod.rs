@@ -194,6 +194,9 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 		let mut picture = div()
 			.id("gpui-widgets-viewer-picture")
 			.flex_1()
+			.min_w_0()
+			.min_h_0()
+			.overflow_hidden()
 			.relative()
 			.bg(gpui::Hsla {
 				h: 0.0,
@@ -213,9 +216,12 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 					.size_full()
 					.object_fit(fit)
 					.into_any(),
-				ViewerFrameSource::CpuFrame(image) => {
-					img(image.clone()).size_full().object_fit(fit).into_any()
-				}
+				ViewerFrameSource::CpuFrame(image) => img(image.clone())
+					.size_full()
+					.min_w_0()
+					.min_h_0()
+					.object_fit(fit)
+					.into_any(),
 			};
 			picture = picture.child(picture_element);
 		} else {
@@ -395,6 +401,8 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			.size_full()
 			.flex()
 			.flex_col()
+			.min_w_0()
+			.overflow_hidden()
 			.child(picture)
 			.child(transport_bar)
 	}

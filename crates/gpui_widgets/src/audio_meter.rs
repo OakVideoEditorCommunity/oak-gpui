@@ -6,7 +6,7 @@
 
 use gpui::{
 	App, Bounds, Context, Entity, FocusHandle, Focusable, Hsla, Render, Window, canvas,
-	colors::DefaultColors, fill, point, prelude::*, px, size,
+	colors::DefaultColors, fill, hsla, point, prelude::*, px, size,
 };
 
 use crate::scopes::{decay_peak, meter_lit_segments};
@@ -15,6 +15,21 @@ use crate::scopes::{decay_peak, meter_lit_segments};
 const SEGMENTS: usize = 16;
 /// Peak decay per frame (fraction of full scale).
 const PEAK_DECAY: f32 = 0.01;
+
+/// Segment color by position, per the NLE convention: green for the body,
+/// yellow approaching full scale, red at the top (segments count from the
+/// meter's zero end).
+fn segment_color(segment: usize) -> Hsla {
+	let yellow_from = SEGMENTS * 5 / 8; // top ~37% caution
+	let red_from = SEGMENTS * 13 / 16; // top ~19% clip zone
+	if segment >= red_from {
+		hsla(0.0, 0.65, 0.5, 1.0)
+	} else if segment >= yellow_from {
+		hsla(0.13, 0.75, 0.5, 1.0)
+	} else {
+		hsla(0.35, 0.6, 0.45, 1.0)
+	}
+}
 
 /// The orientation of an [`AudioLevelMeter`].
 ///
@@ -110,7 +125,6 @@ impl<D: AudioMeterDataSource> Render for AudioLevelMeter<D> {
 			move |bounds, (), window, _cx| {
 				let width = f32::from(bounds.size.width);
 				let height = f32::from(bounds.size.height);
-				let lit_color = Hsla::from(colors.selected);
 				let dim_color = Hsla::from(colors.border);
 				let peak_color = Hsla::from(colors.text);
 
@@ -134,7 +148,11 @@ impl<D: AudioMeterDataSource> Render for AudioLevelMeter<D> {
 								);
 								window.paint_quad(fill(
 									seg,
-									if segment < lit { lit_color } else { dim_color },
+									if segment < lit {
+										segment_color(segment)
+									} else {
+										dim_color
+									},
 								));
 							}
 							// Peak marker.
@@ -170,7 +188,11 @@ impl<D: AudioMeterDataSource> Render for AudioLevelMeter<D> {
 								);
 								window.paint_quad(fill(
 									seg,
-									if segment < lit { lit_color } else { dim_color },
+									if segment < lit {
+										segment_color(segment)
+									} else {
+										dim_color
+									},
 								));
 							}
 							// Peak marker.

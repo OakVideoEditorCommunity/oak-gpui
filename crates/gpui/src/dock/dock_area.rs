@@ -837,7 +837,7 @@ impl DockArea {
 					let child = child
 						.flex_basis(relative(share))
 						.flex_grow_0()
-						.flex_shrink_0();
+						.flex_shrink();
 					container = container.child(child);
 					// One handle per boundary, so every pair of panels can be
 					// resized independently.

@@ -31,6 +31,11 @@ use super::{
 /// Screen-space width of each trim-handle hit zone, in pixels.
 pub const TRIM_HANDLE_WIDTH: f32 = 6.0;
 
+/// Corner radius of the clip body, per the design's rounded bars. Painted
+/// into the body quad itself: gpui's content masks are rectangular only, so
+/// a rounded `overflow_hidden` wrapper would not clip the canvas corners.
+const CLIP_CORNER_RADIUS: Pixels = px(4.0);
+
 /// Fallback pixels-per-frame used for internal decoration geometry.
 ///
 /// [`ClipElement`] receives no zoom (see the type docs), so transition wedge
@@ -265,7 +270,7 @@ impl RenderOnce for ClipElement {
 								a: paint.color.a * 0.5,
 							}
 						};
-						window.paint_quad(fill(bounds, body_color));
+						window.paint_quad(fill(bounds, body_color).corner_radii(CLIP_CORNER_RADIUS));
 
 						// Transition wedges: triangles tapering into the clip
 						// from each edge, capped at 40% of the body width so tiny
@@ -302,10 +307,16 @@ impl RenderOnce for ClipElement {
 
 						// State overlays, in back-to-front order.
 						if !paint.enabled {
-							window.paint_quad(fill(bounds, hsla(0., 0., 0.05, 0.55)));
+							window.paint_quad(
+								fill(bounds, hsla(0., 0., 0.05, 0.55))
+									.corner_radii(CLIP_CORNER_RADIUS),
+							);
 						}
 						if paint.locked {
-							window.paint_quad(fill(bounds, hsla(0., 0., 0.1, 0.25)));
+							window.paint_quad(
+								fill(bounds, hsla(0., 0., 0.1, 0.25))
+									.corner_radii(CLIP_CORNER_RADIUS),
+							);
 						}
 
 						// Rich content via the decorator, scoped to the frames
@@ -330,11 +341,10 @@ impl RenderOnce for ClipElement {
 
 						// Selection outline on top of everything.
 						if paint.selected {
-							window.paint_quad(outline(
-								bounds,
-								hsla(0.6, 0.8, 0.6, 1.),
-								BorderStyle::Solid,
-							));
+							window.paint_quad(
+								outline(bounds, hsla(0.6, 0.8, 0.6, 1.), BorderStyle::Solid)
+									.corner_radii(CLIP_CORNER_RADIUS),
+							);
 						}
 					},
 				)

@@ -71,6 +71,7 @@ impl RenderOnce for PlayheadElement {
 				window.paint_path(path, color);
 			},
 		)
+		.size_full()
 	}
 }
 
