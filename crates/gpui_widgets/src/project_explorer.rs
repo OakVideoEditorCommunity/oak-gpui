@@ -13,7 +13,6 @@ use gpui::{
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 /// A fully transparent color (for un-hovered rows).
 fn transparent() -> gpui::Rgba {
@@ -400,7 +399,7 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 			.flex()
 			.flex_col()
 			.on_drop(
-				cx.listener(|this, paths: &Arc<ExternalPaths>, _window, cx| {
+				cx.listener(|this, paths: &ExternalPaths, _window, cx| {
 					cx.emit(ProjectExplorerEvent::FileDropRequested {
 						control: this.control,
 						paths: paths.0.iter().cloned().collect(),
