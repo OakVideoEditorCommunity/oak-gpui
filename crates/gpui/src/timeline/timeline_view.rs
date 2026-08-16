@@ -257,11 +257,17 @@ pub struct TimelineView<D: TimelineDataSource> {
 	focus_handle: FocusHandle,
 }
 
-/// Width of the track-headers column, in pixels.
-const HEADER_WIDTH: f32 = 160.0;
+/// Width of the track-headers column, in pixels. Public so host panels can
+/// convert drop coordinates into clip-area space.
+pub const HEADER_WIDTH: f32 = 160.0;
+
+/// Height of the ruler row, in pixels. Public so host panels can convert
+/// drop coordinates into clip-area space.
+pub const RULER_HEIGHT: f32 = 32.0;
 
 /// Minimum row height enforced by the height-resize drag, in pixels.
-const MIN_TRACK_HEIGHT: f32 = 24.0;
+/// Public so host panels can reproduce the track row layout for drops.
+pub const MIN_TRACK_HEIGHT: f32 = 24.0;
 
 /// Snap engagement threshold, in pixels.
 const SNAP_THRESHOLD_PX: f32 = 8.0;
@@ -890,7 +896,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 		let ruler = div()
 			.flex()
 			.flex_row()
-			.h(px(32.))
+			.h(px(RULER_HEIGHT))
 			.flex_shrink_0()
 			.child(div().w(px(HEADER_WIDTH)).flex_shrink_0())
 			.child(

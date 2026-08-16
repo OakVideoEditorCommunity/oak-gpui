@@ -9,7 +9,8 @@
 
 use gpui::{
 	App, ClickEvent, Context, ElementId, Entity, EventEmitter, ExternalPaths, FocusHandle,
-	Focusable, Hsla, Render, SharedString, Window, colors::DefaultColors, div, img, prelude::*, px,
+	Focusable, Hsla, Point, Pixels, Render, SharedString, Window, colors::DefaultColors, div,
+	hsla, img, prelude::*, px,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -53,6 +54,37 @@ impl ProjectEntry {
 		self.thumbnail = Some(thumbnail.into());
 		self
 	}
+}
+
+/// The drag payload of a draggable media entry: the entry's stable id (the
+/// same value the host uses as the [`ProjectEntry`] key). Drop targets (the
+/// timeline) receive this id and place a clip of the footage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FootageDrag(pub u64);
+
+/// The ghost rendered under the cursor while dragging a media entry.
+struct FootageDragGhost;
+
+impl Render for FootageDragGhost {
+	fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+		// A small translucent swatch matching the icon placeholder size.
+		div()
+			.size(px(72.0))
+			.h(px(48.0))
+			.rounded_md()
+			.bg(hsla(0.55, 0.6, 0.5, 0.5))
+	}
+}
+
+/// Builds the drag ghost for a footage drag (see
+/// [`StatefulInteractiveElement::on_drag`](gpui::StatefulInteractiveElement::on_drag)).
+fn footage_drag_ghost(
+	_drag: &FootageDrag,
+	_offset: Point<Pixels>,
+	_window: &mut Window,
+	cx: &mut App,
+) -> Entity<FootageDragGhost> {
+	cx.new(|_cx| FootageDragGhost)
 }
 
 /// The host's project model, read through this trait.
@@ -315,6 +347,11 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 						// host's icon set is timeline/viewer tools only).
 						.child(div().w(px(16.0)).child(if entry.is_dir { "▣" } else { "▤" }))
 						.child(div().child(entry.name.clone()));
+					if !entry.is_dir {
+						// Media rows are drag sources: the payload carries the
+						// entry id for the timeline drop target.
+						row = row.on_drag(FootageDrag(entry.id), footage_drag_ghost);
+					}
 					if !is_selected {
 						row = row.hover(|style| style.bg(Hsla::from(colors.selected).opacity(0.3)));
 					}
@@ -323,7 +360,22 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 				column
 			}
 			ExplorerView::Icons => {
-				// A flat grid of the roots' children with thumbnails.
+				// A flat grid of the visible media: root-level entries (leaves)
+				// directly, folder roots expanded to their children — the same
+				// visible set the tree shows. (The former `children(root)`
+				// only looped the roots' children, so root-level footage —
+				// imported media that lives directly in the project root —
+				// never appeared.)
+				let visible: Vec<ProjectEntry> = roots
+					.iter()
+					.flat_map(|root| {
+						if root.is_dir {
+							self.data.read(cx).children(root.id)
+						} else {
+							vec![root.clone()]
+						}
+					})
+					.collect();
 				let mut grid = div()
 					.id(ElementId::named_usize(
 						"gpui-widgets-explorer-icons",
@@ -334,60 +386,64 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 					.gap_2()
 					.p_2()
 					.overflow_y_scroll();
-				for entry in roots
-					.iter()
-					.flat_map(|root| self.data.read(cx).children(root.id))
-				{
+				for entry in visible {
 					let is_selected = selected == Some(entry.id);
 					let click_entry = entry.clone();
-					grid = grid.child(
-						div()
-							.id(ElementId::named_usize(
-								"gpui-widgets-explorer-icon",
-								entry.id as usize,
-							))
-							.w(px(96.0))
-							.p_1()
-							.rounded_md()
-							.flex()
-							.flex_col()
-							.items_center()
-							.gap_1()
-							.cursor_pointer()
-							.bg(if is_selected {
-								colors.selected
-							} else {
-								transparent()
-							})
-							.on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
-								this.selected = Some(click_entry.id);
-								if event.click_count() >= 2 {
-									this.open(&click_entry, cx);
-								}
-								cx.notify();
-							}))
-							.child(if let Some(thumbnail) = entry.thumbnail.clone() {
-								img(thumbnail).w(px(72.0)).h(px(48.0)).into_any_element()
-							} else {
-								div()
-									.w(px(72.0))
-									.h(px(48.0))
-									.rounded_md()
-									.bg(Hsla::from(colors.selected).opacity(0.4))
-									.flex()
-									.items_center()
-									.justify_center()
-									.text_color(colors.text)
-									.child(entry.name.chars().next().unwrap_or(' ').to_string())
-									.into_any_element()
-							})
-							.child(
-								div()
-									.w_full()
-									.text_color(colors.text)
-									.child(entry.name.clone()),
-							),
-					);
+					let entry_id = entry.id;
+					let mut icon = div()
+						.id(ElementId::named_usize(
+							"gpui-widgets-explorer-icon",
+							entry.id as usize,
+						))
+						.debug_selector(move || {
+							format!("gpui-widgets-explorer-icon-{entry_id}").into()
+						})
+						.w(px(96.0))
+						.p_1()
+						.rounded_md()
+						.flex()
+						.flex_col()
+						.items_center()
+						.gap_1()
+						.cursor_pointer()
+						.bg(if is_selected {
+							colors.selected
+						} else {
+							transparent()
+						})
+						.on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
+							this.selected = Some(click_entry.id);
+							if event.click_count() >= 2 {
+								this.open(&click_entry, cx);
+							}
+							cx.notify();
+						}))
+						.child(if let Some(thumbnail) = entry.thumbnail.clone() {
+							img(thumbnail).w(px(72.0)).h(px(48.0)).into_any_element()
+						} else {
+							div()
+								.w(px(72.0))
+								.h(px(48.0))
+								.rounded_md()
+								.bg(Hsla::from(colors.selected).opacity(0.4))
+								.flex()
+								.items_center()
+								.justify_center()
+								.text_color(colors.text)
+								.child(entry.name.chars().next().unwrap_or(' ').to_string())
+								.into_any_element()
+						})
+						.child(
+							div()
+								.w_full()
+								.text_color(colors.text)
+								.child(entry.name.clone()),
+						);
+					if !entry.is_dir {
+						// Media icons are drag sources like the tree rows.
+						icon = icon.on_drag(FootageDrag(entry.id), footage_drag_ghost);
+					}
+					grid = grid.child(icon);
 				}
 				grid
 			}
@@ -627,5 +683,38 @@ mod tests {
 			})
 		});
 		assert!(changed, "expected a ViewChanged(Icons) event");
+	}
+
+	/// The icon grid shows the tree's *visible* set: root-level media
+	/// entries (leaves) appear directly, folder roots are expanded to their
+	/// children, and the folder root itself is not shown. Regression test
+	/// for the old `children(root)` loop, which skipped root-level footage
+	/// entirely.
+	#[gpui::test]
+	async fn icons_view_lists_root_files_and_folder_children(cx: &mut TestAppContext) {
+		let (cx, _host) = make_explorer(cx);
+		let toggle = cx
+			.debug_bounds("gpui-widgets-explorer-icons")
+			.expect("icons toggle rendered");
+		cx.simulate_click(toggle.center(), Modifiers::none());
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+
+		// MockData roots: folder 1 "Footage" (child 10 "a.mov") and the
+		// root-level file 2 "Notes.md".
+		assert!(
+			cx.debug_bounds("gpui-widgets-explorer-icon-2").is_some(),
+			"a root-level media entry must show as an icon"
+		);
+		assert!(
+			cx.debug_bounds("gpui-widgets-explorer-icon-10").is_some(),
+			"a folder child must show as an icon"
+		);
+		assert!(
+			cx.debug_bounds("gpui-widgets-explorer-icon-1").is_none(),
+			"the folder root itself has no icon"
+		);
 	}
 }
