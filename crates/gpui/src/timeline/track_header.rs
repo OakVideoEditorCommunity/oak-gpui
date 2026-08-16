@@ -16,12 +16,12 @@
 //! module the header never mutates the model — the host applies the change
 //! through its engine and the next data read reflects it.
 //!
-//! The element is purely visual (like [`TimelineRuler`](super::TimelineRuler)):
-//! it paints the name and the toggle state glyphs, while the click handlers
-//! that turn a press into a [`TrackHeaderEvent`] are attached by
-//! [`TimelineView`](super::TimelineView)'s interactive wrapper.
+//! The toggle glyphs are clickable when [`TrackHeader::on_toggle`] is
+//! installed (the [`TimelineView`](super::TimelineView) wires it to emit
+//! `TimelineEvent::TrackToggleRequested`); without a handler they render as
+//! inert status glyphs.
 
-use crate::{App, Hsla, SharedString, Window, div, hsla, prelude::*, px};
+use crate::{App, ClickEvent, ElementId, Hsla, SharedString, Window, div, hsla, prelude::*, px};
 
 use super::data::TrackKind;
 
@@ -42,6 +42,11 @@ pub enum TrackHeaderEvent {
 	ToggleVisibility,
 }
 
+/// The handler a host attaches to turn a toggle click into an engine
+/// request: `(track index, requested toggle, window, app)`.
+pub type TrackToggleHandler =
+	std::sync::Arc<dyn Fn(usize, TrackHeaderEvent, &mut Window, &mut App)>;
+
 /// The header control for one track, rendered in the left column.
 ///
 /// The header fills its cell in the view's row layout; the bottom
@@ -55,6 +60,8 @@ pub struct TrackHeader {
 	muted: bool,
 	solo: bool,
 	visible: bool,
+	/// Click handler for the toggle glyphs; `None` renders them inert.
+	on_toggle: Option<TrackToggleHandler>,
 }
 
 impl TrackHeader {
@@ -73,6 +80,7 @@ impl TrackHeader {
 			muted: false,
 			solo: false,
 			visible: true,
+			on_toggle: None,
 		}
 	}
 
@@ -103,6 +111,13 @@ impl TrackHeader {
 		self
 	}
 
+	/// Builder: the handler invoked when a toggle glyph is clicked. Without
+	/// it the glyphs render inert (pure status display).
+	pub fn on_toggle(mut self, handler: TrackToggleHandler) -> Self {
+		self.on_toggle = Some(handler);
+		self
+	}
+
 	/// Index of the track this header controls.
 	pub fn track_index(&self) -> usize {
 		self.index
@@ -126,9 +141,21 @@ impl TrackHeader {
 		}
 	}
 
-	/// A small toggle glyph (one or two letters) reflecting `active`.
-	fn toggle_glyph(&self, label: &str, active: bool) -> impl IntoElement {
-		div()
+	/// A small toggle glyph (one or two letters) reflecting `active`. When an
+	/// [`Self::on_toggle`] handler is installed the glyph is a click target
+	/// emitting `event`; the click stops propagating so it never toggles the
+	/// header row's track selection.
+	fn toggle_glyph(
+		&self,
+		glyph: &'static str,
+		active: bool,
+		event: TrackHeaderEvent,
+	) -> impl IntoElement {
+		let index = self.index;
+		let on_toggle = self.on_toggle.clone();
+		let mut target = div()
+			.id(ElementId::Name(format!("track-toggle-{index}-{glyph}").into()))
+			.debug_selector(move || format!("track-toggle-{index}-{glyph}").into())
 			.px_1()
 			.rounded(px(3.))
 			.text_xs()
@@ -142,12 +169,21 @@ impl TrackHeader {
 			} else {
 				hsla(0.0, 0.0, 0.5, 0.55)
 			})
-			.child(label.to_string())
+			.child(glyph.to_string());
+		if let Some(handler) = on_toggle {
+			target = target.cursor_pointer().on_click(
+				move |_click: &ClickEvent, _window, cx: &mut App| {
+					handler(index, event, _window, cx);
+					cx.stop_propagation();
+				},
+			);
+		}
+		target
 	}
 
 	/// The kind-appropriate toggle glyphs, left of the separator.
 	fn toggle_row(&self) -> impl IntoElement {
-		let lock = self.toggle_glyph("L", self.locked);
+		let lock = self.toggle_glyph("L", self.locked, TrackHeaderEvent::ToggleLock);
 		match self.kind {
 			TrackKind::Audio => div()
 				.flex()
@@ -155,15 +191,15 @@ impl TrackHeader {
 				.items_center()
 				.gap(px(3.))
 				.child(lock)
-				.child(self.toggle_glyph("M", self.muted))
-				.child(self.toggle_glyph("S", self.solo)),
+				.child(self.toggle_glyph("M", self.muted, TrackHeaderEvent::ToggleMute))
+				.child(self.toggle_glyph("S", self.solo, TrackHeaderEvent::ToggleSolo)),
 			TrackKind::Video | TrackKind::Subtitle => div()
 				.flex()
 				.flex_row()
 				.items_center()
 				.gap(px(3.))
 				.child(lock)
-				.child(self.toggle_glyph("V", self.visible)),
+				.child(self.toggle_glyph("V", self.visible, TrackHeaderEvent::ToggleVisibility)),
 		}
 	}
 }

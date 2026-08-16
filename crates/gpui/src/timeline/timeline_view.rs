@@ -80,7 +80,7 @@ use super::{
 	ruler::{RulerMarker, TimelineRuler},
 	state::TimelineState,
 	time::{Frame, FrameRange, SnapKind, SnapPoint, snap},
-	track_header::TrackHeader,
+	track_header::{TrackHeader, TrackHeaderEvent, TrackToggleHandler},
 };
 
 /// Which edge of a clip a trim gesture grabbed.
@@ -167,6 +167,16 @@ pub enum TimelineEvent {
 		track: usize,
 		/// Whether the track is now selected.
 		selected: bool,
+	},
+
+	/// A track header's toggle glyph was clicked. The widget changes nothing
+	/// itself; the host applies the toggle through its engine (Oak: the
+	/// undoable track flag setters) and notifies the data source.
+	TrackToggleRequested {
+		/// Index of the track whose toggle was clicked.
+		track: usize,
+		/// The requested toggle.
+		toggle: TrackHeaderEvent,
 	},
 
 	/// The user dragged a transition wedge's edge to change its length.
@@ -971,6 +981,19 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 			.children(rows.iter().map(|row| {
 				let height = row.height;
 				let separator_y = row.y + height - TrackHeader::SEPARATOR_HEIGHT;
+				// The toggle glyphs report through the view as
+				// `TrackToggleRequested` edit requests (the view itself
+				// never mutates the model).
+				let view = cx.weak_entity();
+				let on_toggle: TrackToggleHandler =
+					Arc::new(move |track, toggle, _window, app| {
+						if let Some(view) = view.upgrade() {
+							view.update(app, |_this, cx| {
+								cx.emit(TimelineEvent::TrackToggleRequested { track, toggle });
+								cx.notify();
+							});
+						}
+					});
 				div()
 					.h(px(height))
 					.relative()
@@ -998,7 +1021,8 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 									.locked(row.locked)
 									.muted(row.muted)
 									.solo(row.solo)
-									.visible(row.visible),
+									.visible(row.visible)
+									.on_toggle(on_toggle),
 							),
 					)
 					.child(
@@ -1438,6 +1462,7 @@ fn marker_accent_color() -> Hsla {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::timeline::FrameRate;
 
 	#[test]
 	fn reshape_work_area_moves_edges_within_bounds() {
@@ -1466,6 +1491,137 @@ mod tests {
 		// base for edge moves.
 		let reshaped = reshape_work_area(None, Frame(0), Frame(40), EdgeKind::Out, 1000);
 		assert_eq!(reshaped, FrameRange::new(Frame(0), Frame(40)));
+	}
+
+	/// A minimal data source for the interaction tests: one video track, no
+	/// clips.
+	struct OneTrackSource;
+
+	/// Root view hosting the timeline, recording every emitted event.
+	struct Host {
+		timeline: Entity<TimelineView<OneTrackSource>>,
+		events: Vec<TimelineEvent>,
+	}
+
+	impl Render for Host {
+		fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+			div().size_full().child(self.timeline.clone())
+		}
+	}
+
+	struct StubClip;
+
+	impl ClipData for StubClip {
+		fn id(&self) -> ClipId {
+			ClipId(0)
+		}
+
+		fn range(&self) -> FrameRange {
+			FrameRange::new(Frame::ZERO, Frame(10))
+		}
+
+		fn media_in(&self) -> Frame {
+			Frame::ZERO
+		}
+
+		fn label(&self) -> SharedString {
+			"clip".into()
+		}
+	}
+
+	struct StubTrack;
+
+	impl TrackData for StubTrack {
+		type Clip = StubClip;
+
+		fn kind(&self) -> TrackKind {
+			TrackKind::Video
+		}
+
+		fn name(&self) -> SharedString {
+			"V1".into()
+		}
+
+		fn height(&self) -> Pixels {
+			px(48.0)
+		}
+
+		fn clips(&self) -> &[Self::Clip] {
+			&[]
+		}
+	}
+
+	impl TimelineDataSource for OneTrackSource {
+		type Track = StubTrack;
+
+		fn frame_rate(&self) -> FrameRate {
+			FrameRate::new(25, 1)
+		}
+
+		fn sequence_length(&self) -> Frame {
+			Frame(1000)
+		}
+
+		fn track_count(&self) -> usize {
+			1
+		}
+
+		fn track(&self, index: usize) -> Option<Self::Track> {
+			(index == 0).then_some(StubTrack)
+		}
+	}
+
+	/// Clicking a track header's toggle glyph emits a
+	/// `TrackToggleRequested` edit request (and does NOT toggle the header's
+	/// track selection).
+	#[test]
+	fn track_toggle_click_emits_request() {
+		use crate::{Modifiers, TestAppContext, VisualTestContext, size};
+		use std::ops::Deref;
+
+		let mut test_app = TestAppContext::single();
+		test_app.update(|cx| cx.init_colors());
+		let window = test_app.open_window(size(px(800.), px(200.)), |window, cx| {
+			let source = cx.new(|_cx| OneTrackSource);
+			let timeline = cx.new(|cx| TimelineView::new(source, window, cx));
+			let host = Host {
+				events: Vec::new(),
+				timeline,
+			};
+			cx.subscribe(
+				&host.timeline,
+				|host: &mut Host,
+				 _t: Entity<TimelineView<OneTrackSource>>,
+				 event: &TimelineEvent,
+				 _cx: &mut Context<Host>| {
+					host.events.push(event.clone());
+				},
+			)
+			.detach();
+			host
+		});
+		let any_window = *window.deref();
+		let host = window.root(&mut test_app).expect("host root");
+		let mut cx = VisualTestContext::from_window(any_window, &test_app).into_mut();
+
+		let toggle = cx
+			.debug_bounds("track-toggle-0-L")
+			.expect("the lock glyph rendered");
+		cx.simulate_click(toggle.center(), Modifiers::none());
+		cx.run_until_parked();
+
+		let events = cx.read(|app| host.read(app).events.clone());
+		assert!(
+			events.contains(&TimelineEvent::TrackToggleRequested {
+				track: 0,
+				toggle: TrackHeaderEvent::ToggleLock,
+			}),
+			"the lock toggle click emitted its request, got {events:?}"
+		);
+		assert!(
+			!events.iter().any(|e| matches!(e, TimelineEvent::TrackSelected { .. })),
+			"the toggle click must not bubble into a track selection"
+		);
 	}
 }
 

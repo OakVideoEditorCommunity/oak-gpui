@@ -250,7 +250,8 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 		let selected = self.selected;
 		let control = self.control;
 
-		// Toolbar: view toggle.
+		// Toolbar: view toggle (small glyph buttons; the localized words stay
+		// as tooltips).
 		let toolbar = div()
 			.flex()
 			.items_center()
@@ -260,6 +261,7 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 			.bg(colors.container)
 			.child(toggle_button(
 				"gpui-widgets-explorer-tree",
+				"☰",
 				crate::i18n::tr("explorer.tree", "树"),
 				self.view == ExplorerView::Tree,
 				&colors,
@@ -269,6 +271,7 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 			))
 			.child(toggle_button(
 				"gpui-widgets-explorer-icons",
+				"▦",
 				crate::i18n::tr("explorer.icons", "图标"),
 				self.view == ExplorerView::Icons,
 				&colors,
@@ -472,19 +475,24 @@ fn this_expanded(expanded: &HashSet<u64>, id: u64) -> bool {
 	expanded.contains(&id)
 }
 
-/// A small toggle button for the view switcher.
+/// A small glyph toggle button for the view switcher: the glyph is the
+/// button face, the localized word its tooltip.
 fn toggle_button(
 	id: &'static str,
+	glyph: &'static str,
 	label: impl Into<gpui::SharedString>,
 	active: bool,
 	colors: &gpui::colors::Colors,
 	on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+	let label: gpui::SharedString = label.into();
 	div()
 		.id(id)
 		.debug_selector(move || id.into())
-		.px_2()
-		.py_1()
+		.size(px(24.0))
+		.flex()
+		.items_center()
+		.justify_center()
 		.rounded_md()
 		.bg(if active {
 			colors.selected
@@ -497,8 +505,9 @@ fn toggle_button(
 			colors.text
 		})
 		.cursor_pointer()
+		.tooltip(move |window, cx| crate::tooltip::tooltip_view(label.clone(), window, cx))
 		.on_click(on_click)
-		.child(label.into())
+		.child(glyph)
 }
 
 #[cfg(test)]
