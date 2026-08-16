@@ -471,6 +471,36 @@ impl DockArea {
 		cx.notify();
 	}
 
+	/// Ensures a drag state exists for `panel`, creating one lazily when a
+	/// `PanelId` drag arrives at this dock area.
+	///
+	/// The tab strip hands the drag over via the deferred
+	/// [`TabBarEvent::DockDragStarted`] subscription, which is only delivered
+	/// after the current mouse-event dispatch completes — so a fast drag can
+	/// cross the strip and reach its target before the state exists, and the
+	/// hovered target (and thus the drop) is missed. The dock area's own
+	/// capture-phase `on_drag_move` handlers run first in the same dispatch, so
+	/// they call this to start the state immediately and never depend on the
+	/// strip's (redundant) handoff. Drags of panels this dock does not own are
+	/// ignored.
+	fn ensure_drag(&mut self, panel: PanelId, position: Point<Pixels>, cx: &mut Context<Self>) {
+		match &mut self.drag {
+			Some(drag) if drag.panel == panel => {
+				drag.position = position;
+			}
+			_ if self.panels.contains_key(&panel) => {
+				self.drag = Some(DockDragState {
+					panel,
+					position,
+					hovered: None,
+					hovered_bounds: None,
+				});
+			}
+			_ => return,
+		}
+		cx.notify();
+	}
+
 	/// Updates the hovered drop target during a drag. Attached to panel
 	/// containers via `on_drag_move` with a payload identifying the dragged
 	/// panel.
@@ -749,7 +779,10 @@ impl DockArea {
 	/// Attached to every rendered panel container via `on_drag_move`; the
 	/// container's bounds come from the drag event itself, so no element
 	/// lookup is needed. Runs after the root's own `on_drag_move` (capture
-	/// phase), overriding any root-edge target with the exact per-panel one.
+	/// phase), overriding any root-edge target with the exact per-panel one —
+	/// except over the dragged panel's own group, where the drop is a no-op and
+	/// a root-edge target is left intact so the panel can still be docked to
+	/// the outer edge of the whole area.
 	fn update_panel_drag(
 		&mut self,
 		target: &[PanelId],
@@ -758,12 +791,25 @@ impl DockArea {
 		cx: &mut Context<Self>,
 	) {
 		let dragged = *event.drag(cx);
+		// Lazily start the drag state; the strip's own handoff arrives one
+		// dispatch late (see `ensure_drag`).
+		self.ensure_drag(dragged, event.event.position, cx);
 		if target.contains(&dragged) {
 			// Dropping a panel onto itself or its own tab group is a no-op;
-			// clear any root-edge target the root handler may have set.
-			if let Some(drag) = self.drag.as_mut() {
-				drag.hovered = None;
-				drag.hovered_bounds = None;
+			// clear the hovered target. A root-edge target (`panel: None`)
+			// established by the root handler for this exact position still
+			// wins — it docks the panel to the outer edge of the whole area
+			// rather than back into its own group.
+			let keep_root_edge = self
+				.drag
+				.as_ref()
+				.and_then(|drag| drag.hovered)
+				.is_some_and(|target| target.panel.is_none());
+			if !keep_root_edge {
+				if let Some(drag) = self.drag.as_mut() {
+					drag.hovered = None;
+					drag.hovered_bounds = None;
+				}
 			}
 			return;
 		}
@@ -932,6 +978,9 @@ impl Render for DockArea {
 			.on_drag_move::<PanelId>(cx.listener(
 				|this, event: &DragMoveEvent<PanelId>, window, cx| {
 					let dragged = *event.drag(cx);
+					// Lazily start the drag state; the strip's own handoff
+					// arrives one dispatch late (see `ensure_drag`).
+					this.ensure_drag(dragged, event.event.position, cx);
 					let Some(drag) = this.drag.as_mut() else {
 						return;
 					};
@@ -1050,5 +1099,313 @@ impl DockArea {
 				Self::collect_paths_in(child, &child_path, out);
 			}
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::{
+		AnyElement, EventEmitter, Modifiers, MouseButton, Render, SharedString, TestAppContext,
+		VisualTestContext, WindowHandle, dock::DockPanel, point, px, size,
+	};
+	use std::ops::Deref;
+
+	/// A minimal dockable panel: a labeled box.
+	struct TestPanel {
+		id: u64,
+		title: SharedString,
+	}
+
+	impl TestPanel {
+		fn new(id: u64, title: &str) -> Self {
+			Self {
+				id,
+				title: title.into(),
+			}
+		}
+	}
+
+	impl Render for TestPanel {
+		fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+			div()
+				.size_full()
+				.flex()
+				.items_center()
+				.justify_center()
+				.child(self.title.clone())
+		}
+	}
+
+	impl EventEmitter<PanelEvent> for TestPanel {}
+
+	impl DockPanel for TestPanel {
+		fn panel_id(&self) -> PanelId {
+			PanelId::new(self.id)
+		}
+
+		fn title(&self, _cx: &App) -> SharedString {
+			self.title.clone()
+		}
+
+		fn tab_content(&self, _cx: &App) -> AnyElement {
+			div().child(self.title.clone()).into_any_element()
+		}
+	}
+
+	/// Root view hosting the dock area, so tests can reach the dock entity.
+	struct DockHost {
+		dock: Entity<DockArea>,
+	}
+
+	impl Render for DockHost {
+		fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+			div().size_full().child(self.dock.clone())
+		}
+	}
+
+	/// Seeds a dock area with `panels` (the first becomes the root; the rest
+	/// merge into it as tabs) plus the panels described by `targets` (added
+	/// relative to an existing panel). Returns the typed window handle of the
+	/// 800x600 test window.
+	fn open_dock_window(
+		test_app: &mut TestAppContext,
+		panels: &[(u64, &str)],
+		targets: &[(u64, u64, DropZone)],
+	) -> WindowHandle<DockHost> {
+		test_app.update(|cx| cx.init_colors());
+		test_app.open_window(size(px(800.), px(600.)), |_window, cx| {
+			let dock = cx.new(|cx| DockArea::new(cx));
+			for (index, &(id, title)) in panels.iter().enumerate() {
+				let panel = PanelHandle::new(cx.new(|_| TestPanel::new(id, title)), cx);
+				dock.update(cx, |dock, cx| {
+					let target = if index == 0 {
+						None
+					} else {
+						Some(DropTarget {
+							panel: Some(PanelId::new(panels[0].0)),
+							zone: DropZone::Center,
+						})
+					};
+					dock.add_panel(panel, target, cx);
+				});
+			}
+			for &(id, target, zone) in targets {
+				let panel = PanelHandle::new(cx.new(|_| TestPanel::new(id, "Extra")), cx);
+				dock.update(cx, |dock, cx| {
+					dock.add_panel(
+						panel,
+						Some(DropTarget {
+							panel: Some(PanelId::new(target)),
+							zone,
+						}),
+						cx,
+					);
+				});
+			}
+			DockHost { dock }
+		})
+	}
+
+	/// Describes a layout tree as a compact string for assertions:
+	/// tabs are `[1,2]`, horizontal splits `a|b`, vertical splits `a/b`.
+	fn describe(node: &DockNode) -> String {
+		match node {
+			DockNode::Split {
+				direction,
+				children,
+				..
+			} => {
+				let sep = match direction {
+					Axis::Horizontal => "|",
+					Axis::Vertical => "/",
+				};
+				children
+					.iter()
+					.map(describe)
+					.collect::<Vec<_>>()
+					.join(sep)
+			}
+			DockNode::Tabs { panels, .. } => {
+				let inner = panels
+					.iter()
+					.map(|p| p.raw().to_string())
+					.collect::<Vec<_>>()
+					.join(",");
+				format!("[{inner}]")
+			}
+			DockNode::Panel(id) => id.raw().to_string(),
+		}
+	}
+
+	/// Simulates a full tab drag: press at `from`, move past the drag threshold
+	/// to `mid`, then continue to `to` and release.
+	fn drag_tab(
+		cx: &mut VisualTestContext,
+		from: Point<Pixels>,
+		mid: Point<Pixels>,
+		to: Point<Pixels>,
+	) {
+		cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+		cx.simulate_mouse_move(mid, Some(MouseButton::Left), Modifiers::default());
+		cx.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
+		cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+	}
+
+	/// The layout of the dock area in the host root view, as a string.
+	fn dock_layout(view: &Entity<DockHost>, cx: &mut VisualTestContext) -> String {
+		cx.update(|_window, app| {
+			describe(
+				view.read(app)
+					.dock
+					.read(app)
+					.layout()
+					.root()
+					.expect("dock has a root"),
+			)
+		})
+	}
+
+	/// The hovered drop target recorded during a drag, if any.
+	fn hovered_target(view: &Entity<DockHost>, cx: &mut VisualTestContext) -> Option<DropTarget> {
+		cx.update(|_window, app| {
+			view.read(app)
+				.dock
+				.read(app)
+				.drag
+				.as_ref()
+				.and_then(|d| d.hovered)
+		})
+	}
+
+	/// Dragging a tab onto another panel's center merges it into that panel's
+	/// tab group.
+	#[test]
+	fn drag_tab_merges_into_another_group() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One"), (2, "Two")], &[(3, 1, DropZone::Right)]);
+		let any_window = *window.deref();
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app).into_mut();
+
+		// Layout: [1,2] | 3 (horizontal split, tab group on the left).
+		assert_eq!(dock_layout(&view, cx), "[1,2]|3");
+
+		// Drag tab 2 (left group, y=13 within the 26px strip) to the center of
+		// panel 3 (right half of the 800x600 window).
+		drag_tab(
+			&mut cx,
+			point(px(80.), px(13.)),
+			point(px(126.), px(43.)),
+			point(px(600.), px(300.)),
+		);
+
+		// Panel 2 now lives in a tab group with panel 3; the left group is
+		// left with panel 1 alone.
+		assert_eq!(dock_layout(&view, cx), "[1]|[3,2]");
+	}
+
+	/// Dragging a tab to the outer edge of the dock area splits the whole
+	/// layout in that direction.
+	#[test]
+	fn drag_tab_to_root_edge_splits_layout() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One"), (2, "Two")], &[]);
+		let any_window = *window.deref();
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app).into_mut();
+
+		assert_eq!(dock_layout(&view, cx), "[1,2]");
+
+		// Drag tab 1 to the far right edge of the window (the edge band is a
+		// quarter of the smaller dimension, so x=780 is within it).
+		drag_tab(
+			&mut cx,
+			point(px(24.), px(13.)),
+			point(px(60.), px(43.)),
+			point(px(780.), px(300.)),
+		);
+
+		// The root split: [2] on the left, panel 1 alone on the right.
+		assert_eq!(dock_layout(&view, cx), "[2]|1");
+	}
+
+	/// While dragging over a target, the hovered drop target is recorded so the
+	/// drop indicator can render; a self-drop (own group) records none.
+	#[test]
+	fn drag_hover_records_target_but_not_self() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One"), (2, "Two")], &[(3, 1, DropZone::Right)]);
+		let any_window = *window.deref();
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app).into_mut();
+
+		// Start a drag of tab 2 but stop before releasing.
+		cx.simulate_mouse_down(point(px(80.), px(13.)), MouseButton::Left, Modifiers::default());
+		cx.simulate_mouse_move(point(px(126.), px(43.)), Some(MouseButton::Left), Modifiers::default());
+		cx.simulate_mouse_move(point(px(600.), px(300.)), Some(MouseButton::Left), Modifiers::default());
+
+		// Over panel 3's center the target is recorded.
+		assert_eq!(
+			hovered_target(&view, &mut cx),
+			Some(DropTarget {
+				panel: Some(PanelId::new(3)),
+				zone: DropZone::Center
+			})
+		);
+
+		// Moving back over the dragged panel's own group clears the target.
+		cx.simulate_mouse_move(point(px(200.), px(300.)), Some(MouseButton::Left), Modifiers::default());
+		assert_eq!(hovered_target(&view, &mut cx), None);
+	}
+
+	/// Dragging a tab onto the edge band of another panel splits that panel in
+	/// the corresponding direction instead of merging it as a tab.
+	#[test]
+	fn drag_tab_to_edge_of_other_panel_splits_it() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One"), (2, "Two")], &[(3, 1, DropZone::Right)]);
+		let any_window = *window.deref();
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app).into_mut();
+
+		assert_eq!(dock_layout(&view, cx), "[1,2]|3");
+
+		// Drop tab 2 just inside panel 3's left edge band (band is a quarter
+		// of the smaller dimension: 100px here, so x=420 is within it).
+		drag_tab(
+			&mut cx,
+			point(px(80.), px(13.)),
+			point(px(126.), px(43.)),
+			point(px(420.), px(300.)),
+		);
+
+		// Panel 2 lands as a new sibling to the left of panel 3 inside the
+		// existing horizontal split.
+		assert_eq!(dock_layout(&view, cx), "[1]|2|3");
+	}
+
+	/// Releasing a drag over the panel's own group is a no-op: the layout is
+	/// left untouched.
+	#[test]
+	fn drag_release_over_own_group_is_noop() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One"), (2, "Two")], &[]);
+		let any_window = *window.deref();
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app).into_mut();
+
+		assert_eq!(dock_layout(&view, cx), "[1,2]");
+
+		// Drag tab 1 out of the strip, back over its own group's content, and
+		// release there.
+		drag_tab(
+			&mut cx,
+			point(px(24.), px(13.)),
+			point(px(60.), px(43.)),
+			point(px(200.), px(300.)),
+		);
+
+		assert_eq!(dock_layout(&view, cx), "[1,2]");
 	}
 }

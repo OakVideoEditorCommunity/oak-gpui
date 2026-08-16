@@ -2620,6 +2620,9 @@ impl Interactivity {
 								cursor_style: drag_cursor_style,
 							});
 							pending_mouse_down.take();
+							if std::env::var("OAK_DEBUG_DRAG").is_ok() {
+								eprintln!("[drag] started");
+							}
 							window.refresh();
 							cx.stop_propagation();
 						}
