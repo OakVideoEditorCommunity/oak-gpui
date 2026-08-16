@@ -77,7 +77,7 @@ use super::{
 	clip::{ClipContent, ClipDecorator, ClipElement, NoopClipDecorator, TRIM_HANDLE_WIDTH},
 	data::{ClipData, ClipId, TimelineDataSource, TrackData, TrackKind},
 	playhead::PlayheadElement,
-	ruler::TimelineRuler,
+	ruler::{RulerMarker, TimelineRuler},
 	state::TimelineState,
 	time::{Frame, FrameRange, SnapKind, SnapPoint, snap},
 	track_header::TrackHeader,
@@ -191,6 +191,31 @@ pub enum TimelineEvent {
 		track: usize,
 		/// New row height.
 		height: Pixels,
+	},
+
+	/// The user is dragging on the ruler, reshaping the work area. `start` /
+	/// `end` are the NEW in/out frames; the widget already updated its local
+	/// band (`[`TimelineState::work_area`]`), and the host should apply the
+	/// new range **live** (not undoable), mirroring Olive's drag behavior.
+	WorkAreaPreview {
+		/// The new work-area in point.
+		start: Frame,
+		/// The new work-area out point.
+		end: Frame,
+	},
+
+	/// The ruler work-area drag finished. The host commits the new range as
+	/// ONE undoable entry whose "old" side is `old_start`/`old_end` (the
+	/// range at drag start, before any live preview was applied).
+	WorkAreaCommitted {
+		/// The committed work-area in point.
+		start: Frame,
+		/// The committed work-area out point.
+		end: Frame,
+		/// The in point at drag start (the undo side of the command).
+		old_start: Frame,
+		/// The out point at drag start (the undo side of the command).
+		old_end: Frame,
 	},
 
 	/// The zoom (pixels per frame) changed via ctrl-scroll or pinch.
@@ -645,6 +670,104 @@ impl<D: TimelineDataSource> TimelineView<D> {
 		}
 	}
 
+	/// How close (in pixels) a press must be to a work-area band edge for the
+	/// drag to resize that edge instead of reshaping the whole band.
+	const WORK_AREA_EDGE_THRESHOLD_PX: f32 = 6.0;
+
+	/// Updates a ruler work-area drag from the pointer position.
+	///
+	/// The first drag that passes the click/drag threshold (see
+	/// [`RulerDrag`]) reshapes the work area: pressing near an existing band
+	/// edge moves that edge, any other press replaces the whole band with the
+	/// range spanned from the press point. The widget updates its local band
+	/// immediately and emits [`TimelineEvent::WorkAreaPreview`] so the host
+	/// can apply the range live (not undoable). A plain click never reaches
+	/// here — it only seeks (the ruler's `on_mouse_down`).
+	fn update_ruler_drag(
+		&mut self,
+		event: &DragMoveEvent<Arc<RwLock<RulerDrag>>>,
+		cx: &mut Context<Self>,
+	) {
+		let drag = Arc::clone(event.drag(cx));
+		let press = cx
+			.active_drag
+			.as_ref()
+			.map(|drag| drag.cursor_offset)
+			.unwrap_or_default();
+		let now = event.event.position - event.bounds.origin;
+		let mut drag = drag.write().expect("ruler drag lock is not poisoned");
+		let dx = (now.x.0 - press.x.0).abs();
+		if dx < 3.0 {
+			// Still within the click threshold; keep seeking-only behavior.
+			return;
+		}
+		if !drag.resizing {
+			// First real drag movement: pick what the gesture reshapes. A
+			// press within `WORK_AREA_EDGE_THRESHOLD_PX` of an existing band
+			// edge moves that edge; otherwise the whole band is replaced.
+			let edge = match self.state.work_area {
+				Some(band) => {
+					let in_edge = self.state.point_at_frame(band.start).0;
+					let out_edge = self.state.point_at_frame(band.end).0;
+					if (press.x.0 - in_edge).abs() <= Self::WORK_AREA_EDGE_THRESHOLD_PX {
+						EdgeKind::In
+					} else if (press.x.0 - out_edge).abs() <= Self::WORK_AREA_EDGE_THRESHOLD_PX {
+						EdgeKind::Out
+					} else {
+						EdgeKind::Whole
+					}
+				}
+				None => EdgeKind::Whole,
+			};
+			drag.edge = Some(edge);
+			drag.old_band = self.state.work_area;
+			drag.resizing = true;
+		}
+		let Some(edge) = drag.edge else {
+			return;
+		};
+		let seq_len = self.sequence_length(cx).0.max(1);
+		let frame = self.state.frame_at_point(now.x).0.clamp(0, seq_len);
+		let press_frame = self.state.frame_at_point(press.x).0.clamp(0, seq_len);
+		let band = reshape_work_area(drag.old_band, Frame(press_frame), Frame(frame), edge, seq_len);
+		self.state.work_area = Some(band);
+		drag.new_band = Some(band);
+		cx.emit(TimelineEvent::WorkAreaPreview {
+			start: band.start,
+			end: band.end,
+		});
+		cx.notify();
+	}
+
+	/// Emits [`TimelineEvent::WorkAreaCommitted`] for a finished ruler drag:
+	/// the host commits the new range as ONE undoable entry whose old side is
+	/// the band at drag start (`0..0` when the drag created a new band).
+	fn finish_ruler_drag(&mut self, drag: &Arc<RwLock<RulerDrag>>, cx: &mut Context<Self>) {
+		let (resizing, old_band, new_band) = {
+			let drag = drag.read().expect("ruler drag lock is not poisoned");
+			(drag.resizing, drag.old_band, drag.new_band)
+		};
+		if !resizing {
+			return;
+		}
+		let Some(new) = new_band else {
+			return;
+		};
+		// A drag that created a new band (no old one) reports the empty
+		// `0..0` range as its old side; the host's undoable commit restores
+		// disabled + the empty range on undo.
+		let old = old_band.unwrap_or(FrameRange::new(Frame::ZERO, Frame::ZERO));
+		if old != new {
+			cx.emit(TimelineEvent::WorkAreaCommitted {
+				start: new.start,
+				end: new.end,
+				old_start: old.start,
+				old_end: old.end,
+			});
+			cx.notify();
+		}
+	}
+
 	/// Emits [`TimelineEvent::SelectionChanged`] for a finished marquee.
 	fn finish_marquee(&mut self, cx: &mut Context<Self>) {
 		cx.emit(TimelineEvent::SelectionChanged);
@@ -752,6 +875,18 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 		let playhead_x = state.point_at_frame(state.playhead).0;
 		let decorator = self.decorator.clone();
 
+		// Sequence markers → ruler paint data (the data source provides them
+		// sorted; the ruler colors them, falling back to the accent).
+		let marker_color = marker_accent_color();
+		let markers: Vec<RulerMarker> = source
+			.markers()
+			.into_iter()
+			.map(|m| RulerMarker {
+				frame: m.frame,
+				color: m.color.unwrap_or(marker_color),
+			})
+			.collect();
+
 		let ruler = div()
 			.flex()
 			.flex_row()
@@ -776,7 +911,29 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 							this.seek(frame, cx);
 						}),
 					)
-					.child(TimelineRuler::new(state.clone(), frame_rate, seq_len)),
+					.on_drag(
+						Arc::new(RwLock::new(RulerDrag {
+							old_band: None,
+							new_band: None,
+							edge: None,
+							resizing: false,
+						})),
+						drag_ghost,
+					)
+					.on_drag_move(cx.listener(
+						|this, event: &DragMoveEvent<Arc<RwLock<RulerDrag>>>, _window, cx| {
+							this.update_ruler_drag(event, cx);
+						},
+					))
+					.on_drop(
+						cx.listener(|this, drag: &Arc<RwLock<RulerDrag>>, _window, cx| {
+							this.finish_ruler_drag(drag, cx);
+						}),
+					)
+					.child(
+						TimelineRuler::new(state.clone(), frame_rate, seq_len)
+							.markers(markers),
+					),
 			);
 
 		let headers = div()
@@ -1116,6 +1273,32 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 	}
 }
 
+/// Which edge of a work-area band a ruler drag reshapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeKind {
+	/// The band's in (left) edge.
+	In,
+	/// The band's out (right) edge.
+	Out,
+	/// The whole band, replaced by the press-to-cursor range.
+	Whole,
+}
+
+/// Shared state for a ruler work-area drag. The drag starts on every ruler
+/// press (alongside the seek), but only starts reshaping once the pointer
+/// moves past the click threshold.
+struct RulerDrag {
+	/// The work-area band at drag start; `None` when the drag creates a new
+	/// band.
+	old_band: Option<FrameRange>,
+	/// The band as the pointer moved.
+	new_band: Option<FrameRange>,
+	/// What the gesture reshapes, decided on the first real movement.
+	edge: Option<EdgeKind>,
+	/// Whether the pointer has passed the click threshold.
+	resizing: bool,
+}
+
 /// Shared state for a clip-move gesture (the clip wrapper starts it, the
 /// clip area updates and finishes it).
 struct ClipDrag {
@@ -1203,6 +1386,81 @@ fn drag_ghost<T>(
 /// The playhead line color.
 fn playhead_color() -> Hsla {
 	hsla(0.0, 0.0, 0.9, 0.9)
+}
+
+/// Reshapes the work-area band for a ruler drag move.
+///
+/// * `band` — the band at drag start (`None` = the drag creates a new one).
+/// * `press_frame` / `current_frame` — the clamped press and pointer frames.
+/// * `edge` — what the gesture reshapes (see [`EdgeKind`]).
+///
+/// `In`/`Out` keep at least one frame of band length; `Whole` replaces the
+/// band with the press-to-pointer range, always `[start, end)` with
+/// `end > start`.
+fn reshape_work_area(
+	band: Option<FrameRange>,
+	press_frame: Frame,
+	current_frame: Frame,
+	edge: EdgeKind,
+	seq_len: i64,
+) -> FrameRange {
+	let mut band = band.unwrap_or_else(|| FrameRange::new(Frame::ZERO, Frame(seq_len)));
+	match edge {
+		EdgeKind::In => band.start = Frame(current_frame.0.min((band.end.0 - 1).max(0))),
+		EdgeKind::Out => band.end = Frame(current_frame.0.max(band.start.0 + 1)),
+		EdgeKind::Whole => {
+			band = if press_frame.0 <= current_frame.0 {
+				FrameRange::new(
+					press_frame,
+					Frame(current_frame.0.max(press_frame.0 + 1)),
+				)
+			} else {
+				FrameRange::new(current_frame, Frame(press_frame.0.max(current_frame.0 + 1)))
+			};
+		}
+	}
+	band
+}
+
+/// The default marker color (used when a marker carries no explicit color):
+/// the theme-agnostic amber accent, distinct from the playhead and the
+/// work-area band.
+fn marker_accent_color() -> Hsla {
+	hsla(0.10, 0.85, 0.55, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn reshape_work_area_moves_edges_within_bounds() {
+		let band = FrameRange::new(Frame(20), Frame(80));
+		// In edge: clamped so the band never collapses or inverts.
+		let reshaped = reshape_work_area(Some(band), Frame(20), Frame(50), EdgeKind::In, 1000);
+		assert_eq!(reshaped, FrameRange::new(Frame(50), Frame(80)));
+		let reshaped = reshape_work_area(Some(band), Frame(20), Frame(95), EdgeKind::In, 1000);
+		assert_eq!(reshaped, FrameRange::new(Frame(79), Frame(80)));
+		// Out edge.
+		let reshaped = reshape_work_area(Some(band), Frame(80), Frame(40), EdgeKind::Out, 1000);
+		assert_eq!(reshaped, FrameRange::new(Frame(20), Frame(40)));
+		let reshaped = reshape_work_area(Some(band), Frame(80), Frame(10), EdgeKind::Out, 1000);
+		assert_eq!(reshaped, FrameRange::new(Frame(20), Frame(21)));
+	}
+
+	#[test]
+	fn reshape_work_area_whole_replaces_or_creates_the_band() {
+		// Forward drag: press-to-cursor range.
+		let reshaped = reshape_work_area(Some(FrameRange::new(Frame(0), Frame(10))), Frame(30), Frame(70), EdgeKind::Whole, 1000);
+		assert_eq!(reshaped, FrameRange::new(Frame(30), Frame(70)));
+		// Backward drag: the range is normalized (start <= end).
+		let reshaped = reshape_work_area(Some(FrameRange::new(Frame(0), Frame(10))), Frame(70), Frame(30), EdgeKind::Whole, 1000);
+		assert_eq!(reshaped, FrameRange::new(Frame(30), Frame(70)));
+		// Creating a band from nothing uses the virtual 0..length band as the
+		// base for edge moves.
+		let reshaped = reshape_work_area(None, Frame(0), Frame(40), EdgeKind::Out, 1000);
+		assert_eq!(reshaped, FrameRange::new(Frame(0), Frame(40)));
+	}
 }
 
 /// The default body color for clips on a track of `kind`.

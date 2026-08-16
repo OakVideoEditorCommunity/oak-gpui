@@ -19,7 +19,7 @@
 //! shorter and unlabeled.
 
 use crate::{
-	App, Bounds, Font, SharedString, TextAlign, TextRun, Window, canvas, fill, hsla, point,
+	App, Bounds, Font, Hsla, SharedString, TextAlign, TextRun, Window, canvas, fill, hsla, point,
 	prelude::*, px, size,
 };
 
@@ -27,6 +27,15 @@ use super::{
 	state::TimelineState,
 	time::{Frame, FrameRange, FrameRate, TimeDisplay},
 };
+
+/// A marker to paint on the ruler, at a sequence frame with its color.
+#[derive(Debug, Clone)]
+pub struct RulerMarker {
+	/// The marker's frame position.
+	pub frame: Frame,
+	/// The marker's color (the theme accent is the fallback).
+	pub color: Hsla,
+}
 
 /// The sequence ruler rendered above the tracks.
 ///
@@ -42,6 +51,8 @@ pub struct TimelineRuler {
 	frame_rate: FrameRate,
 	sequence_length: Frame,
 	display: TimeDisplay,
+	/// Markers to paint (from the data source), in ascending frame order.
+	markers: Vec<RulerMarker>,
 }
 
 impl TimelineRuler {
@@ -61,6 +72,7 @@ impl TimelineRuler {
 			frame_rate,
 			sequence_length,
 			display: TimeDisplay::default(),
+			markers: Vec::new(),
 		}
 	}
 
@@ -68,6 +80,13 @@ impl TimelineRuler {
 	/// [`TimeDisplay::Timecode`].
 	pub fn time_display(mut self, display: TimeDisplay) -> Self {
 		self.display = display;
+		self
+	}
+
+	/// Builder: the markers to paint (sequence markers from the data
+	/// source). Drawn as small diamonds below the tick baseline.
+	pub fn markers(mut self, markers: Vec<RulerMarker>) -> Self {
+		self.markers = markers;
 		self
 	}
 
@@ -142,6 +161,8 @@ struct RulerContent {
 	/// Local x-extents `(left, right)` of the work-area band, if a work
 	/// area is set.
 	work_area: Option<(f32, f32)>,
+	/// Marker positions `(x, color)` for the visible markers.
+	markers: Vec<(f32, Hsla)>,
 }
 
 impl RenderOnce for TimelineRuler {
@@ -197,6 +218,15 @@ impl RenderOnce for TimelineRuler {
 					}
 				}
 
+				// Markers within the visible span, in ascending frame order
+				// (the data source provides them sorted).
+				let markers = self
+					.markers
+					.iter()
+					.filter(|m| m.frame >= first && m.frame <= last)
+					.map(|m| (state.point_at_frame(m.frame).0, m.color))
+					.collect();
+
 				RulerContent {
 					ticks,
 					work_area: work_area.map(|range| {
@@ -205,6 +235,7 @@ impl RenderOnce for TimelineRuler {
 							state.point_at_frame(range.end).0,
 						)
 					}),
+					markers,
 				}
 			},
 			move |bounds, content, window, cx| {
@@ -232,6 +263,26 @@ impl RenderOnce for TimelineRuler {
 							},
 							band_color,
 						));
+					}
+				}
+
+				// Markers as small diamonds hanging below the tick baseline.
+				let marker_half: f32 = 3.0;
+				for (x, color) in &content.markers {
+					let cx = bounds.left() + px(*x);
+					let cy = bounds.bottom() - px(4.0);
+					let mut path = crate::path_builder::PathBuilder::fill();
+					path.add_polygon(
+						&[
+							point(cx, cy - px(marker_half)),
+							point(cx + px(marker_half), cy),
+							point(cx, cy + px(marker_half)),
+							point(cx - px(marker_half), cy),
+						],
+						true,
+					);
+					if let Ok(path) = path.build() {
+						window.paint_path(path, *color);
 					}
 				}
 
