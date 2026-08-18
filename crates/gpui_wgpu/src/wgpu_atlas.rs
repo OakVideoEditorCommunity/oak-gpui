@@ -246,14 +246,49 @@ impl WgpuAtlasState {
 	}
 
 	fn upload_texture(&mut self, id: AtlasTextureId, bounds: Bounds<DevicePixels>, bytes: &[u8]) {
-		let data = self
-			.storage
-			.get(id)
-			.map(|texture| swizzle_upload_data(bytes, texture.format))
-			.unwrap_or_else(|| bytes.to_vec());
-
-		self.pending_uploads
-			.push(PendingUpload { id, bounds, data });
+		// Identity-format uploads (BGRA on macOS, i.e. every viewer video
+		// frame) write straight from the caller's slice: queueing an owned
+		// `to_vec()` first was a full-frame CPU copy per upload. Only the
+		// RGBA swizzle and the not-yet-allocated fallback still stage an
+		// owned buffer. `write_texture` enqueues on the same queue the
+		// frame is drawn with, so the ordering guarantees are identical to
+		// the batched `pending_uploads` flush.
+		let Some(texture) = self.storage.get(id) else {
+			let data = bytes.to_vec();
+			self.pending_uploads
+				.push(PendingUpload { id, bounds, data });
+			return;
+		};
+		if texture.format == wgpu::TextureFormat::Rgba8Unorm {
+			let data = swizzle_upload_data(bytes, texture.format);
+			self.pending_uploads
+				.push(PendingUpload { id, bounds, data });
+			return;
+		}
+		let bytes_per_pixel = texture.bytes_per_pixel();
+		self.queue.write_texture(
+			wgpu::TexelCopyTextureInfo {
+				texture: &texture.texture,
+				mip_level: 0,
+				origin: wgpu::Origin3d {
+					x: bounds.origin.x.0 as u32,
+					y: bounds.origin.y.0 as u32,
+					z: 0,
+				},
+				aspect: wgpu::TextureAspect::All,
+			},
+			bytes,
+			wgpu::TexelCopyBufferLayout {
+				offset: 0,
+				bytes_per_row: Some(bounds.size.width.0 as u32 * bytes_per_pixel as u32),
+				rows_per_image: None,
+			},
+			wgpu::Extent3d {
+				width: bounds.size.width.0 as u32,
+				height: bounds.size.height.0 as u32,
+				depth_or_array_layers: 1,
+			},
+		);
 	}
 
 	fn flush_uploads(&mut self) {
