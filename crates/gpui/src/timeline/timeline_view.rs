@@ -70,7 +70,7 @@ use std::sync::{Arc, RwLock};
 use crate::{
 	AnyElement, App, Context, DragMoveEvent, ElementId, Entity, EventEmitter, FocusHandle,
 	Focusable, Hsla, MouseButton, MouseDownEvent, PinchEvent, Pixels, Point, Render, ScrollDelta,
-	ScrollWheelEvent, SharedString, Window, div, hsla, prelude::*, px,
+	ScrollWheelEvent, SharedString, Window, canvas, div, hsla, prelude::*, px,
 };
 
 use super::{
@@ -231,6 +231,39 @@ pub enum TimelineEvent {
 	/// The zoom (pixels per frame) changed via ctrl-scroll or pinch.
 	/// Persist as view state if desired.
 	ZoomChanged(f32),
+
+	/// The user right-clicked somewhere in the widget. The widget opens no
+	/// menu itself; `hit` tells the host what was under the pointer so it
+	/// can assemble the matching context menu at `position`. Not undoable.
+	ContextMenuRequested {
+		/// The click position in window coordinates (suitable for placing a
+		/// popup).
+		position: Point<Pixels>,
+		/// What the click hit.
+		hit: TimelineHit,
+	},
+}
+
+/// What a right-click hit in the timeline widget (the
+/// [`TimelineEvent::ContextMenuRequested`] payload).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TimelineHit {
+	/// A clip.
+	Clip(ClipId),
+	/// The empty track area: the track under the pointer plus the frame at
+	/// the pointer's x position.
+	Empty {
+		/// Index of the track under the pointer.
+		track: usize,
+		/// The frame at the pointer's x position.
+		frame: Frame,
+	},
+	/// A track header.
+	TrackHead(usize),
+	/// A ruler marker (the marker's frame).
+	RulerMarker(Frame),
+	/// The ruler, away from any marker (the frame at the pointer).
+	Ruler(Frame),
 }
 
 /// The video-editing timeline widget.
@@ -265,6 +298,10 @@ pub struct TimelineView<D: TimelineDataSource> {
 	/// Rich clip content (thumbnails / waveforms), replaced by the host.
 	decorator: std::sync::Arc<std::sync::RwLock<dyn ClipDecorator>>,
 	focus_handle: FocusHandle,
+	/// The clip area's window-space origin, captured on every layout by a
+	/// canvas child (the right-click hit test converts window positions
+	/// through it).
+	clip_area_origin: Point<Pixels>,
 }
 
 /// Width of the track-headers column, in pixels. Public so host panels can
@@ -298,6 +335,7 @@ impl<D: TimelineDataSource> TimelineView<D> {
 			selected_tracks: BTreeSet::new(),
 			decorator: std::sync::Arc::new(std::sync::RwLock::new(NoopClipDecorator)),
 			focus_handle,
+			clip_area_origin: Point::default(),
 		}
 	}
 
@@ -927,6 +965,29 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 							this.seek(frame, cx);
 						}),
 					)
+					.on_mouse_down(
+						MouseButton::Right,
+						cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+							let x = event.position.x - this.clip_area_origin.x;
+							// A press close to a marker addresses the marker
+							// (the ruler paints them as thin glyphs); any
+							// other press addresses the ruler itself.
+							let marker =
+								this.source.read(cx).markers().into_iter().find(|marker| {
+									let marker_x = this.state.point_at_frame(marker.frame);
+									(f32::from(marker_x - x)).abs() <= SNAP_THRESHOLD_PX
+								});
+							let hit = match marker {
+								Some(marker) => TimelineHit::RulerMarker(marker.frame),
+								None => TimelineHit::Ruler(this.state.frame_at_point(x)),
+							};
+							cx.emit(TimelineEvent::ContextMenuRequested {
+								position: event.position,
+								hit,
+							});
+							cx.stop_propagation();
+						}),
+					)
 					.on_drag(
 						Arc::new(RwLock::new(RulerDrag {
 							old_band: None,
@@ -1016,6 +1077,19 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 									cx.notify();
 								})
 							})
+							.on_mouse_down(
+								MouseButton::Right,
+								cx.listener({
+									let track = row.index;
+									move |_this, event: &MouseDownEvent, _window, cx| {
+										cx.emit(TimelineEvent::ContextMenuRequested {
+											position: event.position,
+											hit: TimelineHit::TrackHead(track),
+										});
+										cx.stop_propagation();
+									}
+								}),
+							)
 							.child(
 								TrackHeader::new(row.index, row.name.clone(), row.kind)
 									.locked(row.locked)
@@ -1045,6 +1119,14 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 							),
 					)
 			}));
+
+		// The clip area's canvas child records the element's window-space
+		// origin into the view (see the canvas below).
+		let view = cx.entity();
+		// The per-clip right-click handlers live inside a `move` closure
+		// (the rows are consumed), so they cannot borrow `cx` for
+		// `cx.listener`; they go through this weak handle instead.
+		let weak_view = cx.weak_entity();
 
 		let clip_area = div()
 			.flex_1()
@@ -1085,6 +1167,21 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 				}
 				cx.notify();
 			}))
+			.on_mouse_down(
+				MouseButton::Right,
+				cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+					// A right-click that reaches the clip area itself hit no
+					// clip (clip handlers stop propagation): report the empty
+					// track area with the track and frame under the pointer.
+					let local = event.position - this.clip_area_origin;
+					let frame = this.state.frame_at_point(local.x);
+					let track = this.track_at_y(f32::from(local.y), cx);
+					cx.emit(TimelineEvent::ContextMenuRequested {
+						position: event.position,
+						hit: TimelineHit::Empty { track, frame },
+					});
+				}),
+			)
 			.on_drag(MarqueeDrag, drag_ghost)
 			.on_drag_move(cx.listener(
 				|this, event: &DragMoveEvent<Arc<RwLock<ClipDrag>>>, _window, cx| {
@@ -1121,6 +1218,19 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 					this.finish_height_drag(drag, cx);
 				}),
 			)
+			.child(
+				// Records the clip area's window-space origin on every
+				// layout (the right-click hit test converts window
+				// positions through it); paints nothing.
+				canvas(
+					move |bounds, _window, cx| {
+						view.update(cx, |this, _cx| this.clip_area_origin = bounds.origin);
+					},
+					|_bounds, (), _window, _cx| {},
+				)
+				.absolute()
+				.size_full(),
+			)
 			.children(rows.into_iter().map(move |row| {
 				let height = row.height;
 				let row_locked = row.locked;
@@ -1128,6 +1238,9 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 				let row_index = row.index;
 				let state = &state;
 				let decorator = &decorator;
+				// Per-row clone: the per-clip closures below are built once
+				// per row and move this handle in.
+				let weak_view = weak_view.clone();
 				div()
 					.h(px(height))
 					.relative()
@@ -1268,6 +1381,24 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 							.h(px((clip_height - 4.0).max(1.0)))
 							.overflow_hidden()
 							.id(ElementId::named_usize("timeline-clip", clip.id.0 as usize))
+							.on_mouse_down(
+								MouseButton::Right,
+								{
+									let view = weak_view.clone();
+									let id = clip.id;
+									move |event: &MouseDownEvent, _window, cx| {
+										if let Some(view) = view.upgrade() {
+											view.update(cx, |_this, cx| {
+												cx.emit(TimelineEvent::ContextMenuRequested {
+													position: event.position,
+													hit: TimelineHit::Clip(id),
+												});
+												cx.stop_propagation();
+											});
+										}
+									}
+								},
+							)
 							.on_drag(
 								Arc::new(RwLock::new(ClipDrag {
 									clip: clip.id,

@@ -9,8 +9,8 @@
 
 use gpui::{
 	App, ClickEvent, Context, ElementId, Entity, EventEmitter, ExternalPaths, FocusHandle,
-	Focusable, Hsla, Point, Pixels, Render, SharedString, Window, colors::DefaultColors, div,
-	hsla, img, prelude::*, px,
+	Focusable, Hsla, MouseButton, MouseDownEvent, Point, Pixels, Render, SharedString, Window,
+	colors::DefaultColors, div, hsla, img, prelude::*, px,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -130,6 +130,18 @@ pub enum ProjectExplorerEvent {
 		/// The new view mode.
 		view: ExplorerView,
 	},
+	/// An entry (or the empty area) was right-clicked. The widget selects
+	/// the entry but opens no menu itself; the host assembles and shows the
+	/// context menu at `position`.
+	ContextMenuRequested {
+		/// The explorer's stable id.
+		control: usize,
+		/// The right-clicked entry, or `None` when the empty area was
+		/// clicked.
+		id: Option<u64>,
+		/// Mouse position in window coordinates.
+		position: Point<Pixels>,
+	},
 }
 
 /// Flatten a tree into visible rows, honoring the `expanded` set.
@@ -236,6 +248,20 @@ impl<D: ProjectDataSource> ProjectExplorer<D> {
 			cx.notify();
 		}
 	}
+
+	/// Reports a right-click: selects the entry (if any) and emits
+	/// [`ProjectExplorerEvent::ContextMenuRequested`] for the host's menu.
+	fn context_menu(&mut self, id: Option<u64>, position: Point<Pixels>, cx: &mut Context<Self>) {
+		if let Some(id) = id {
+			self.selected = Some(id);
+		}
+		cx.emit(ProjectExplorerEvent::ContextMenuRequested {
+			control: self.control,
+			id,
+			position,
+		});
+		cx.notify();
+	}
 }
 
 impl<D: ProjectDataSource> EventEmitter<ProjectExplorerEvent> for ProjectExplorer<D> {}
@@ -338,6 +364,13 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 							}
 							cx.notify();
 						}))
+						.on_mouse_down(
+							MouseButton::Right,
+							cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+								this.context_menu(Some(entry_id), event.position, cx);
+								cx.stop_propagation();
+							}),
+						)
 						.child(div().w(px(14.0)).child(if entry.is_dir {
 							if this_expanded(&expanded, entry.id) {
 								"▾"
@@ -425,6 +458,13 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 							}
 							cx.notify();
 						}))
+						.on_mouse_down(
+							MouseButton::Right,
+							cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
+								this.context_menu(Some(entry_id), event.position, cx);
+								cx.stop_propagation();
+							}),
+						)
 						.child(if let Some(thumbnail) = entry.thumbnail.clone() {
 							// A filesystem path: load through the path resource so
 							// generated thumbnails resolve without an asset source.
@@ -473,6 +513,14 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 						paths: paths.0.iter().cloned().collect(),
 					});
 					cx.notify();
+				}),
+			)
+			// A right-click that bubbles up to the container hit no entry
+			// (entry handlers stop propagation): the empty-area menu.
+			.on_mouse_down(
+				MouseButton::Right,
+				cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+					this.context_menu(None, event.position, cx);
 				}),
 			)
 			.child(toolbar)

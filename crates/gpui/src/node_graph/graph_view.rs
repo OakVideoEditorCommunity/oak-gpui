@@ -216,6 +216,19 @@ pub enum NodeGraphEvent {
 		/// Click position in graph space.
 		position: Point<Pixels>,
 	},
+
+	/// The user right-clicked a node. If the node was not part of the
+	/// selection, the widget made it the sole selection first (so the
+	/// host's menu actions operate on it — the C++ `NodeView` behavior),
+	/// emitting [`SelectionChanged`](Self::SelectionChanged) ahead of this
+	/// event. `position` is in window coordinates, suitable for placing a
+	/// context menu.
+	NodeContextMenuRequested {
+		/// The right-clicked node.
+		node: NodeId,
+		/// Mouse position in window coordinates.
+		position: Point<Pixels>,
+	},
 }
 
 use NodeGraphEvent::*;
@@ -237,6 +250,8 @@ use NodeGraphEvent::*;
 /// | Left-drag from a port dot | wire drag: compatible target ports highlight live via [`NodeGraphDataSource::can_connect`]; drop on a port emits [`NodeGraphEvent::ConnectionRequested`], drop on empty space cancels and emits [`NodeGraphEvent::BackgroundClicked`] so the app can offer an "add node" menu |
 /// | Left-drag on background | marquee selection ([`NodeGraphEvent::SelectionChanged`]) |
 /// | Click node | select it; Shift-click toggles it in the selection |
+/// | Right-click node | select it (unless already selected) and request its context menu ([`NodeGraphEvent::NodeContextMenuRequested`]) |
+/// | Right-click background | request the background context menu ([`NodeGraphEvent::BackgroundClicked`]) |
 /// | Delete / Backspace | [`NodeGraphEvent::DeleteRequested`] for the selection |
 ///
 /// All mouse positions in events are in window space; hit testing and painting
@@ -980,13 +995,29 @@ impl<D: NodeGraphDataSource + 'static> Render for NodeGraphView<D> {
 				MouseButton::Right,
 				cx.listener(|this, event: &MouseDownEvent, window, cx| {
 					window.focus(&this.focus_handle, cx);
-					if this.hit_test(event.position, cx) == HitTarget::Background {
-						this.on_background_mouse_down(
-							event.position,
-							MouseButton::Right,
-							window,
-							cx,
-						);
+					match this.hit_test(event.position, cx) {
+						HitTarget::Background => {
+							this.on_background_mouse_down(
+								event.position,
+								MouseButton::Right,
+								window,
+								cx,
+							);
+						}
+						// A right-clicked node becomes the sole selection
+						// when it is not part of it, then its context menu
+						// is requested (the C++ `NodeView` behavior).
+						HitTarget::Node(node) => {
+							if !this.state.selection().contains(&node) {
+								this.set_selection_and_emit(BTreeSet::from([node]), cx);
+							}
+							cx.emit(NodeContextMenuRequested {
+								node,
+								position: event.position,
+							});
+							cx.notify();
+						}
+						_ => {}
 					}
 				}),
 			)
