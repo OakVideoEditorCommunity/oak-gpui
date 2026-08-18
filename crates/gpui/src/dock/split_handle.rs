@@ -80,8 +80,9 @@ pub(crate) struct SplitHandle {
 	path: NodePath,
 	/// Boundary this handle moves: between children `index` and `index + 1`.
 	index: usize,
-	/// Pointer position where the current drag started, if dragging.
-	drag_origin: Option<Pixels>,
+	/// Window-space pointer position of the previous drag-move event; the
+	/// first move of a drag establishes the baseline.
+	last_position: Option<Pixels>,
 }
 
 impl SplitHandle {
@@ -104,23 +105,29 @@ impl SplitHandle {
 			direction,
 			path,
 			index,
-			drag_origin: None,
+			last_position: None,
 		}
 	}
 
-	/// Begins a drag, remembering the pointer origin.
-	pub(crate) fn begin_drag(&mut self, origin: Pixels) {
-		self.drag_origin = Some(origin);
+	/// Begins a drag, clearing any stale baseline; the first drag-move event
+	/// establishes the pointer baseline (the drag-start offset handed to the
+	/// ghost constructor is local to the handle's hitbox, a different
+	/// coordinate space than the drag-move positions, so it is unusable).
+	pub(crate) fn begin_drag(&mut self) {
+		self.last_position = None;
 	}
 
-	/// Applies an in-progress drag: converts the pointer delta to a ratio
-	/// delta relative to the pair extent and emits a
-	/// [`SplitHandleEvent::ResizeRequested`].
+	/// Applies an in-progress drag: converts the pointer delta since the
+	/// previous move into a ratio delta relative to the pair extent and
+	/// emits a [`SplitHandleEvent::ResizeRequested`].
 	///
-	/// `start_ratio` is the share of the `index` child within its pair at
-	/// drag start, re-read from the layout by the owning dock area on every
-	/// move so external edits during the drag are respected; `pair_extent` is
-	/// the combined on-screen extent of the two children, in pixels.
+	/// `start_ratio` is the share of the `index` child within its pair,
+	/// re-read from the layout by the owning dock area on every move so
+	/// external edits during the drag are respected; `pair_extent` is the
+	/// combined on-screen extent of the two children, in pixels. Both the
+	/// baseline and `position` are window-space samples of the same
+	/// drag-move stream, so incremental deltas stay consistent regardless of
+	/// the coordinate space any individual event is reported in.
 	pub(crate) fn drag_to(
 		&mut self,
 		position: Pixels,
@@ -128,18 +135,21 @@ impl SplitHandle {
 		start_ratio: f32,
 		cx: &mut Context<Self>,
 	) {
-		let Some(origin) = self.drag_origin else {
+		if pair_extent.0 <= 0.0 {
+			return;
+		}
+		let Some(last) = self.last_position.replace(position) else {
 			return;
 		};
-		if pair_extent.0 <= 0.0 {
+		let delta = position.0 - last.0;
+		if delta == 0.0 {
 			return;
 		}
 		// Keep both children above MIN_CHILD_EXTENT, but never clamp harder
 		// than a quarter of the pair so tiny parents stay resizable.
 		let min_ratio = (Self::MIN_CHILD_EXTENT.0 / pair_extent.0).min(0.25);
 		let max_ratio = 1.0 - min_ratio;
-		let ratio =
-			(start_ratio + (position.0 - origin.0) / pair_extent.0).clamp(min_ratio, max_ratio);
+		let ratio = (start_ratio + delta / pair_extent.0).clamp(min_ratio, max_ratio);
 		cx.emit(SplitHandleEvent::ResizeRequested {
 			path: self.path.clone(),
 			index: self.index,
@@ -150,7 +160,7 @@ impl SplitHandle {
 
 	/// Ends the current drag, if any.
 	pub(crate) fn end_drag(&mut self) {
-		self.drag_origin = None;
+		self.last_position = None;
 	}
 
 	/// Emits a [`SplitHandleEvent::ResetRequested`] for a double-click.
@@ -171,18 +181,15 @@ impl Render for SplitHandle {
 		let direction = self.direction;
 		let handle = cx.entity();
 
-		// Begins the drag on the handle (recording the pointer origin) and
-		// returns the ghost view shown under the pointer.
+		// Begins the drag on the handle; the ghost view is shown under the
+		// pointer. The origin offset is hitbox-local and unused — the handle
+		// establishes its baseline from the first drag-move event instead.
 		let ghost_ctor = move |_drag: &SplitHandleDrag,
-		                       origin: Point<Pixels>,
+		                       _origin: Point<Pixels>,
 		                       _window: &mut Window,
 		                       cx: &mut App| {
 			handle.update(cx, |handle, _cx| {
-				handle.begin_drag(if direction == Axis::Horizontal {
-					origin.x
-				} else {
-					origin.y
-				});
+				handle.begin_drag();
 			});
 			cx.new(|_cx| SplitDragGhost { direction })
 		};

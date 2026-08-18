@@ -111,7 +111,7 @@ pub struct DockArea {
 	tab_bars: HashMap<NodePath, (Entity<TabBar>, Subscription)>,
 	/// One split-handle entity per boundary of each `Split` node, keyed by
 	/// the node's current path and the boundary index. Holds transient drag
-	/// state (`SplitHandle::drag_origin`) across frames; pruned with the tab
+	/// state (`SplitHandle::last_position`) across frames; pruned with the tab
 	/// bars each render. A split with N children keeps N-1 handles so every
 	/// pair of panels can be resized independently.
 	split_handles: HashMap<(NodePath, usize), (Entity<SplitHandle>, Subscription)>,
@@ -753,7 +753,12 @@ impl DockArea {
 			Axis::Horizontal => event.bounds.size.width,
 			Axis::Vertical => event.bounds.size.height,
 		};
-		let pair_extent = full_extent * pair_total / total.max(1.0);
+		// The children share the container extent minus the fixed-size
+		// handles between them; the pair's ratio share applies to that
+		// remainder (keeps the divider tracking the pointer 1:1).
+		let handles = ratios.len().saturating_sub(1) as f32;
+		let usable = full_extent - SplitHandle::HITBOX * handles;
+		let pair_extent = usable * pair_total / total.max(1.0);
 		let position = match direction {
 			Axis::Horizontal => event.event.position.x,
 			Axis::Vertical => event.event.position.y,
@@ -843,6 +848,11 @@ impl DockArea {
 				children,
 			} => {
 				let direction = *direction;
+				// This container's own path, so the drag-move handler only
+				// routes drags that belong to this split (a drag-move fires on
+				// every split container while any handle is dragged; nested
+				// splits must not steal or double-apply the resize).
+				let container_path = path.clone();
 				let mut container = div()
 					.flex()
 					.size_full()
@@ -851,6 +861,9 @@ impl DockArea {
 					.on_drag_move::<SplitHandleDrag>(cx.listener(
 						move |this, event: &DragMoveEvent<SplitHandleDrag>, _window, cx| {
 							let drag = event.drag(cx);
+							if drag.path != container_path {
+								return;
+							}
 							let path = drag.path.clone();
 							let index = drag.index;
 							this.route_split_drag(&path, index, direction, event, cx);
@@ -1276,6 +1289,59 @@ mod tests {
 				.as_ref()
 				.and_then(|d| d.hovered)
 		})
+	}
+
+	/// The root split's ratios (the test layouts split at the root).
+	fn root_ratios(view: &Entity<DockHost>, cx: &mut VisualTestContext) -> Vec<f32> {
+		cx.update(|_window, app| {
+			view.read(app)
+				.dock
+				.read(app)
+				.layout()
+				.split_ratios(&NodePath::default())
+				.expect("root is a split")
+		})
+	}
+
+	/// Dragging a split's divider moves the boundary with the pointer: the
+	/// grab never jumps the ratio to a clamp boundary, and each move applies
+	/// only its own incremental delta to the current ratio (no compounding).
+	#[test]
+	fn dragging_a_split_handle_tracks_the_pointer() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One")], &[(2, 1, DropZone::Right)]);
+		let any_window = *window.deref();
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app).into_mut();
+
+		assert_eq!(dock_layout(&view, cx), "1|2");
+
+		// The divider sits at the middle of the 800px-wide window (a 6px
+		// hitbox around x=400). Grab it, then drag to the right in two 50px
+		// moves; the first drag-move only establishes the baseline.
+		cx.simulate_mouse_down(point(px(400.), px(300.)), MouseButton::Left, Modifiers::default());
+		cx.simulate_mouse_move(point(px(404.), px(300.)), Some(MouseButton::Left), Modifiers::default());
+		cx.simulate_mouse_move(point(px(430.), px(300.)), Some(MouseButton::Left), Modifiers::default());
+		cx.simulate_mouse_move(point(px(480.), px(300.)), Some(MouseButton::Left), Modifiers::default());
+
+		// The left child's share grew by ~50px of the ~794px pair (800
+		// minus the divider), not to a clamp boundary.
+		let ratios = root_ratios(&view, &mut cx);
+		assert!(
+			(ratios[0] - (0.5 + 50.0 / 794.0)).abs() < 0.02,
+			"ratio follows the pointer delta: {ratios:?}"
+		);
+
+		// A second move applies its own delta to the updated ratio; the
+		// total drag distance is not re-applied on top.
+		cx.simulate_mouse_move(point(px(530.), px(300.)), Some(MouseButton::Left), Modifiers::default());
+		let ratios = root_ratios(&view, &mut cx);
+		assert!(
+			(ratios[0] - (0.5 + 100.0 / 794.0)).abs() < 0.02,
+			"deltas accumulate incrementally: {ratios:?}"
+		);
+
+		cx.simulate_mouse_up(point(px(530.), px(300.)), MouseButton::Left, Modifiers::default());
 	}
 
 	/// Dragging a tab onto another panel's center merges it into that panel's
