@@ -226,17 +226,28 @@ impl NodeElement {
 	/// and toggles, port dots tinted by data type (filled when connected,
 	/// hollow otherwise) with labels, selection outline, disabled dimming and
 	/// the compatible-port glow. `origin` is the card's screen-space top-left
-	/// corner; all geometry within the card is node-local.
-	pub(crate) fn paint(&self, origin: Point<Pixels>, window: &mut Window, cx: &mut App) {
+	/// corner; all card geometry is defined in graph space and scaled by
+	/// `zoom` here, so cards shrink/grow consistently with node positions.
+	pub(crate) fn paint(
+		&self,
+		origin: Point<Pixels>,
+		zoom: f32,
+		window: &mut Window,
+		cx: &mut App,
+	) {
 		let colors = cx.default_colors().clone();
-		let bounds = Bounds::new(origin, size(DEFAULT_NODE_WIDTH, self.height()));
+		let width = DEFAULT_NODE_WIDTH * zoom;
+		let header_h = HEADER_HEIGHT * zoom;
+		let dot_r = PORT_DOT_RADIUS * zoom;
+		let bounds = Bounds::new(origin, size(width, self.height() * zoom));
 
 		// Compatible-port glow: a slightly inflated rect behind the card while
 		// a wire drag offers at least one valid drop target on this node.
 		if self.visual.has_compatible_port {
+			let glow_pad = px(2.0) * zoom;
 			let glow = Bounds::new(
-				point(origin.x - px(2.0), origin.y - px(2.0)),
-				size(DEFAULT_NODE_WIDTH + px(4.0), self.height() + px(4.0)),
+				point(origin.x - glow_pad, origin.y - glow_pad),
+				size(width + glow_pad * 2.0, bounds.size.height + glow_pad * 2.0),
 			);
 			window.paint_quad(fill(glow, Hsla::from(colors.selected).opacity(0.2)));
 		}
@@ -247,7 +258,7 @@ impl NodeElement {
 		// Border quad: transparent fill, themed border (accent when selected).
 		window.paint_quad(PaintQuad {
 			bounds,
-			corner_radii: Corners::all(px(4.0)),
+			corner_radii: Corners::all(px(4.0) * zoom),
 			background: hsla(0.0, 0.0, 0.0, 0.0).into(),
 			border_widths: Edges::all(if self.visual.selected {
 				px(1.5)
@@ -264,20 +275,20 @@ impl NodeElement {
 
 		// Header bar with the node's accent color (or the theme container
 		// color), containing the title and the collapse/enable toggles.
-		let header_bounds = Bounds::new(origin, size(DEFAULT_NODE_WIDTH, HEADER_HEIGHT));
+		let header_bounds = Bounds::new(origin, size(width, header_h));
 		window.paint_quad(fill(
 			header_bounds,
 			self.header_color.unwrap_or(Hsla::from(colors.container)),
 		));
 
-		let text_y = bounds.top() + px((HEADER_HEIGHT.0 - 12.0) / 2.0);
+		let text_y = bounds.top() + (header_h - px(12.0) * zoom) * 0.5;
 		paint_text(
 			window,
 			cx,
 			&self.title,
-			px(12.0),
-			point(bounds.left() + px(28.0), text_y),
-			px(12.0),
+			px(12.0) * zoom,
+			point(bounds.left() + px(28.0) * zoom, text_y),
+			px(12.0) * zoom,
 			Hsla::from(colors.text),
 			TextAlign::Left,
 			None,
@@ -289,9 +300,9 @@ impl NodeElement {
 			window,
 			cx,
 			if self.collapsed { "▶" } else { "▼" },
-			px(10.0),
-			point(bounds.left() + px(10.0), text_y),
-			px(12.0),
+			px(10.0) * zoom,
+			point(bounds.left() + px(10.0) * zoom, text_y),
+			px(12.0) * zoom,
 			Hsla::from(colors.text),
 			TextAlign::Left,
 			None,
@@ -302,9 +313,9 @@ impl NodeElement {
 			window,
 			cx,
 			"⏻",
-			px(12.0),
-			point(bounds.right() - px(20.0), text_y),
-			px(12.0),
+			px(12.0) * zoom,
+			point(bounds.right() - px(20.0) * zoom, text_y),
+			px(12.0) * zoom,
 			Hsla::from(colors.text),
 			TextAlign::Left,
 			None,
@@ -312,21 +323,24 @@ impl NodeElement {
 
 		// Port dots and labels, only when the node is expanded.
 		if !self.collapsed {
-			let label_font_size = px(11.0);
-			let label_height = px(12.0);
+			let label_font_size = px(11.0) * zoom;
+			let label_height = px(12.0) * zoom;
 			for port in self.inputs.iter().chain(self.outputs.iter()) {
 				let Some(anchor) = self.port_anchor(port.id) else {
 					continue;
 				};
+				// The anchor is graph-space; scale it into the card's
+				// screen-space rectangle.
+				let center = point(origin.x + anchor.x * zoom, origin.y + anchor.y * zoom);
 				let dot_bounds = Bounds::new(
-					point(anchor.x - PORT_DOT_RADIUS, anchor.y - PORT_DOT_RADIUS),
-					size(PORT_DOT_RADIUS * 2.0, PORT_DOT_RADIUS * 2.0),
+					point(center.x - dot_r, center.y - dot_r),
+					size(dot_r * 2.0, dot_r * 2.0),
 				);
 				if port.connected {
 					// Connected dots are solid tinted circles.
 					window.paint_quad(PaintQuad {
 						bounds: dot_bounds,
-						corner_radii: Corners::all(PORT_DOT_RADIUS),
+						corner_radii: Corners::all(dot_r),
 						background: port.color.into(),
 						border_widths: Edges::all(px(0.0)),
 						border_color: hsla(0.0, 0.0, 0.0, 0.0),
@@ -336,14 +350,12 @@ impl NodeElement {
 					// Unconnected dots are hollow: a tinted ring around the
 					// card's background color.
 					window.paint_quad(fill(dot_bounds, port.color));
+					let inset = px(2.0) * zoom;
 					let inner = Bounds::new(
-						point(
-							anchor.x - PORT_DOT_RADIUS + px(2.0),
-							anchor.y - PORT_DOT_RADIUS + px(2.0),
-						),
+						point(dot_bounds.origin.x + inset, dot_bounds.origin.y + inset),
 						size(
-							PORT_DOT_RADIUS * 2.0 - px(4.0),
-							PORT_DOT_RADIUS * 2.0 - px(4.0),
+							dot_bounds.size.width - inset * 2.0,
+							dot_bounds.size.height - inset * 2.0,
 						),
 					);
 					window.paint_quad(fill(inner, colors.background));
@@ -357,7 +369,10 @@ impl NodeElement {
 							cx,
 							&port.label,
 							label_font_size,
-							point(anchor.x + PORT_DOT_RADIUS + px(6.0), anchor.y - px(6.0)),
+							point(
+								center.x + dot_r + px(6.0) * zoom,
+								center.y - px(6.0) * zoom,
+							),
 							label_height,
 							Hsla::from(colors.text),
 							TextAlign::Left,
@@ -367,15 +382,15 @@ impl NodeElement {
 						// Output labels: right-aligned so they end just left of
 						// the dot. The box origin sits `align_width` left of the
 						// dot; the label's right edge lands at the box right.
-						let align_width = px(100.0);
+						let align_width = px(100.0) * zoom;
 						paint_text(
 							window,
 							cx,
 							&port.label,
 							label_font_size,
 							point(
-								anchor.x - PORT_DOT_RADIUS - px(6.0) - align_width,
-								anchor.y - px(6.0),
+								center.x - dot_r - px(6.0) * zoom - align_width,
+								center.y - px(6.0) * zoom,
 							),
 							label_height,
 							Hsla::from(colors.text),

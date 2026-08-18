@@ -313,13 +313,24 @@ impl<D: NodeGraphDataSource + 'static> NodeGraphView<D> {
 	/// the topmost (last-painted) node wins.
 	fn hit_test(&self, position: Point<Pixels>, cx: &App) -> HitTarget {
 		let anchor = position - self.viewport.origin;
+		let zoom = self.state.zoom();
 		let data = self.data.read(cx);
 		for node in data.nodes().into_iter().rev() {
 			let element = NodeElement::from_node(&node, NodeVisualState::default());
 			let screen_pos = self.state.graph_to_screen(node.position());
-			let bounds = Bounds::new(screen_pos, size(DEFAULT_NODE_WIDTH, element.height()));
+			// Cards are painted scaled by zoom, so their screen-space bounds
+			// are the graph-space card size times `zoom`.
+			let bounds = Bounds::new(
+				screen_pos,
+				size(DEFAULT_NODE_WIDTH * zoom, element.height() * zoom),
+			);
 			if bounds.contains(&anchor) {
-				let local = anchor - screen_pos;
+				// Back to graph-space card-local coordinates for the element's
+				// (unzoomed) hit helpers.
+				let local = point(
+					(anchor.x - screen_pos.x) / zoom,
+					(anchor.y - screen_pos.y) / zoom,
+				);
 				if let Some(port) = element.port_at(local) {
 					return HitTarget::Port(port);
 				}
@@ -761,6 +772,7 @@ impl<D: NodeGraphDataSource + 'static> NodeGraphView<D> {
 		order.extend(top);
 
 		let mut wires = Vec::new();
+		let zoom = self.state.zoom();
 		for edge in data.edges() {
 			let (from_pos, from_element) = match elements.get(&edge.from_node()) {
 				Some(entry) => entry,
@@ -789,10 +801,12 @@ impl<D: NodeGraphDataSource + 'static> NodeGraphView<D> {
 			} else {
 				WireVisualState::Normal
 			};
+			// Anchors are graph-space card-local offsets; scale them into
+			// screen space before adding them to the node's screen origin.
 			wires.push(Wire::new(
 				edge.id(),
-				*from_pos + from_anchor,
-				*to_pos + to_anchor,
+				*from_pos + point(from_anchor.x * zoom, from_anchor.y * zoom),
+				*to_pos + point(to_anchor.x * zoom, to_anchor.y * zoom),
 				data_type,
 				wire_state,
 			));
@@ -856,7 +870,7 @@ impl<D: NodeGraphDataSource + 'static> NodeGraphView<D> {
 			wire.paint(window, zoom);
 		}
 		for (origin, element) in &draw.nodes {
-			element.paint(*origin, window, cx);
+			element.paint(*origin, zoom, window, cx);
 		}
 		if let Some(ghost) = &draw.ghost {
 			paint_ghost(

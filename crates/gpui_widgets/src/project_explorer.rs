@@ -184,6 +184,9 @@ impl<D: ProjectDataSource> ProjectExplorer<D> {
 		_window: &mut Window,
 		cx: &mut Context<Self>,
 	) -> Self {
+		// Re-render when the host's model changes (e.g. a background
+		// thumbnail finished and the entries now carry one).
+		cx.observe(&data, |_, _, cx| cx.notify()).detach();
 		Self {
 			control,
 			data,
@@ -386,6 +389,7 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 					))
 					.flex()
 					.flex_wrap()
+					.items_start()
 					.gap_2()
 					.p_2()
 					.overflow_y_scroll();
@@ -422,7 +426,12 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 							cx.notify();
 						}))
 						.child(if let Some(thumbnail) = entry.thumbnail.clone() {
-							img(thumbnail).w(px(72.0)).h(px(48.0)).into_any_element()
+							// A filesystem path: load through the path resource so
+							// generated thumbnails resolve without an asset source.
+							img(PathBuf::from(thumbnail.as_ref()))
+								.w(px(72.0))
+								.h(px(48.0))
+								.into_any_element()
 						} else {
 							div()
 								.w(px(72.0))
