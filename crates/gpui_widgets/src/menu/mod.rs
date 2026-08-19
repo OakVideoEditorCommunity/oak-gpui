@@ -450,7 +450,7 @@ impl Render for ContextMenu {
 			let submenu = state.submenu;
 			let submenu_hovered = state.submenu_hovered;
 			let position = state.position;
-			let popup = menu_popup_element(
+			let mut popup = menu_popup_element(
 				0,
 				&menu,
 				hovered,
@@ -542,11 +542,10 @@ impl Render for ContextMenu {
 				}
 			}));
 
-			root =
-				root.child(deferred(anchored().position(position).child(popup)).with_priority(1));
-
-			// A hovered/opened parent's submenu, anchored to the right of
-			// the popup (mirrors the menu bar's submenu placement).
+			// A hovered/opened parent's submenu, as an absolutely positioned
+			// child of the popup: it follows the popup's FINAL bounds (after
+			// snap/anchor-switch), so it can never detach from its parent the
+			// way a second window-anchored popup did.
 			if let Some(hovered) = hovered
 				&& submenu == Some(hovered)
 				&& let Some(item) = menu.items.get(hovered)
@@ -572,21 +571,29 @@ impl Render for ContextMenu {
 						}
 					}),
 				);
-				let width = f32::from(menu_width(&menu));
-				// Align the submenu with the parent's row so it opens next
-				// to the item, not the first row.
-				let top = ROW_HEIGHT * (hovered as f32 + 1.0);
-				root = root.child(
-					deferred(
-						anchored()
-							.position(position)
-							.offset(point(px(width + 2.0), px(top)))
-							.snap_to_window_with_margin(px(8.0))
-							.child(sub_popup),
-					)
-					.with_priority(2),
+				// The parent's row top: the popup's py-1 padding plus every
+				// preceding row (a separator is 1px + my-1 on both sides).
+				let mut top = px(4.0);
+				for item in menu.items.iter().take(hovered) {
+					top += if Menu::is_separator(item) {
+						px(9.0)
+					} else {
+						px(ROW_HEIGHT)
+					};
+				}
+				let width = menu_width(&menu) + px(2.0);
+				popup = popup.child(
+					div()
+						.absolute()
+						.left(width)
+						.top(top)
+						.child(sub_popup)
+						.into_any_element(),
 				);
 			}
+
+			root =
+				root.child(deferred(anchored().position(position).child(popup)).with_priority(1));
 
 			window.focus(&self.focus_handle, cx);
 			self.open = Some(ContextMenuState {
