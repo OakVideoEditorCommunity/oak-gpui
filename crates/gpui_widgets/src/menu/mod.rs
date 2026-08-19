@@ -390,6 +390,11 @@ struct ContextMenuState {
 	position: Point<Pixels>,
 	menu: Menu,
 	hovered: Option<usize>,
+	/// The row whose submenu is open (same one-level model as the menu
+	/// bar: a hovered parent opens its submenu to the right).
+	submenu: Option<usize>,
+	/// The hovered row inside the open submenu (row highlight).
+	submenu_hovered: Option<usize>,
 }
 
 impl ContextMenu {
@@ -412,6 +417,8 @@ impl ContextMenu {
 			position,
 			menu,
 			hovered: None,
+			submenu: None,
+			submenu_hovered: None,
 		});
 		cx.notify();
 	}
@@ -440,6 +447,8 @@ impl Render for ContextMenu {
 		if let Some(state) = self.open.take() {
 			let menu = state.menu.clone();
 			let hovered = state.hovered;
+			let submenu = state.submenu;
+			let submenu_hovered = state.submenu_hovered;
 			let position = state.position;
 			let popup = menu_popup_element(
 				0,
@@ -454,7 +463,16 @@ impl Render for ContextMenu {
 					});
 					this.hide(cx);
 				}),
-				cx.listener(|_this, _item: &MenuHovered, _window, _cx| {}),
+				cx.listener(|this, item: &MenuHovered, _window, cx| {
+					// Mouse hover drives the row highlight and opens the
+					// hovered parent's submenu (the menu-bar behavior).
+					if let Some(state) = this.open.as_mut() {
+						state.hovered = Some(item.index);
+						state.submenu = if item.submenu { Some(item.index) } else { None };
+						state.submenu_hovered = None;
+						cx.notify();
+					}
+				}),
 			)
 			.track_focus(&self.focus_handle)
 			.on_mouse_up_out(
@@ -470,21 +488,53 @@ impl Render for ContextMenu {
 							let delta = if event.keystroke.key == "up" { -1 } else { 1 };
 							if let Some(next) = state.menu.navigate(state.hovered, delta) {
 								state.hovered = Some(next);
+								state.submenu = state
+									.menu
+									.items
+									.get(next)
+									.and_then(|item| item.submenu.as_ref().map(|_| next));
 								cx.notify();
 							}
 						}
 					}
+					"right" => {
+						// Open the highlighted parent's submenu (also the
+						// behavior of Enter on a parent row).
+						if let Some(state) = this.open.as_mut()
+							&& let Some(hovered) = state.hovered
+							&& let Some(item) = state.menu.items.get(hovered)
+							&& item.submenu.is_some()
+						{
+							state.submenu = Some(hovered);
+							state.submenu_hovered = None;
+							cx.notify();
+						}
+					}
+					"left" => {
+						if let Some(state) = this.open.as_mut()
+							&& state.submenu.take().is_some()
+						{
+							cx.notify();
+						}
+					}
 					"enter" | "space" => {
-						if let Some(state) = this.open.as_ref()
+						if let Some(state) = this.open.as_mut()
 							&& let Some(hovered) = state.hovered
 							&& let Some(item) = state.menu.items.get(hovered)
 							&& item.enabled
 						{
-							cx.emit(ContextMenuEvent {
-								item: item.id,
-								label: item.label.clone(),
-							});
-							this.hide(cx);
+							if item.submenu.is_some() {
+								state.submenu = Some(hovered);
+								state.submenu_hovered = None;
+								cx.notify();
+							} else {
+								let event = ContextMenuEvent {
+									item: item.id,
+									label: item.label.clone(),
+								};
+								cx.emit(event);
+								this.hide(cx);
+							}
 						}
 					}
 					"escape" => this.hide(cx),
@@ -494,11 +544,57 @@ impl Render for ContextMenu {
 
 			root =
 				root.child(deferred(anchored().position(position).child(popup)).with_priority(1));
+
+			// A hovered/opened parent's submenu, anchored to the right of
+			// the popup (mirrors the menu bar's submenu placement).
+			if let Some(hovered) = hovered
+				&& submenu == Some(hovered)
+				&& let Some(item) = menu.items.get(hovered)
+				&& let Some(submenu_menu) = item.submenu.clone()
+			{
+				let sub_popup = menu_popup_element(
+					1000,
+					&submenu_menu,
+					submenu_hovered,
+					"menu-submenu-popup",
+					&colors,
+					cx.listener(|this, clicked: &MenuClicked, _window, cx| {
+						cx.emit(ContextMenuEvent {
+							item: clicked.id,
+							label: clicked.label.clone(),
+						});
+						this.hide(cx);
+					}),
+					cx.listener(|this, item: &MenuHovered, _window, cx| {
+						if let Some(state) = this.open.as_mut() {
+							state.submenu_hovered = Some(item.index);
+							cx.notify();
+						}
+					}),
+				);
+				let width = f32::from(menu_width(&menu));
+				// Align the submenu with the parent's row so it opens next
+				// to the item, not the first row.
+				let top = ROW_HEIGHT * (hovered as f32 + 1.0);
+				root = root.child(
+					deferred(
+						anchored()
+							.position(position)
+							.offset(point(px(width + 2.0), px(top)))
+							.snap_to_window_with_margin(px(8.0))
+							.child(sub_popup),
+					)
+					.with_priority(2),
+				);
+			}
+
 			window.focus(&self.focus_handle, cx);
 			self.open = Some(ContextMenuState {
 				position,
 				menu,
 				hovered,
+				submenu,
+				submenu_hovered,
 			});
 		}
 
