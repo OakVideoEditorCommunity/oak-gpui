@@ -197,6 +197,7 @@ impl StackDemoRoot {
 						EffectStackEvent::ReorderRequested { .. }
 						| EffectStackEvent::RemoveRequested(_)
 						| EffectStackEvent::AddRequested { .. }
+						| EffectStackEvent::AddTypeRequested { .. }
 						| EffectStackEvent::ContextMenuRequested { .. }
 						| EffectStackEvent::CardSelected { .. }
 						| EffectStackEvent::ParameterChanged { .. } => {

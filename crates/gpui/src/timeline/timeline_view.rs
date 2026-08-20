@@ -1424,6 +1424,45 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 							.overflow_hidden()
 							.id(ElementId::named_usize("timeline-clip", clip.id.0 as usize))
 							.on_mouse_down(
+								MouseButton::Left,
+								{
+									let view = weak_view.clone();
+									let id = clip.id;
+									move |event: &MouseDownEvent, _window, cx| {
+										if let Some(view) = view.upgrade() {
+											view.update(cx, |this, cx| {
+												// NLE selection on press: a plain
+												// press on an unselected clip
+												// selects just it; a press on an
+												// already-selected clip keeps the
+												// multi-selection (group drags
+												// work); Ctrl/Cmd toggles
+												// membership.
+												let changed = if event
+													.modifiers
+													.secondary()
+												{
+													!this.state.selection.remove(&id)
+														&& {
+															this.state.selection.insert(id);
+															true
+														}
+												} else if !this.state.selection.contains(&id) {
+													this.state.selection.clear();
+													this.state.selection.insert(id)
+												} else {
+													false
+												};
+												if changed {
+													cx.emit(TimelineEvent::SelectionChanged);
+													cx.notify();
+												}
+											});
+										}
+									}
+								},
+							)
+							.on_mouse_down(
 								MouseButton::Right,
 								{
 									let view = weak_view.clone();

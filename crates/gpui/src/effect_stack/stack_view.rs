@@ -15,16 +15,19 @@ use crate::{
 };
 
 use super::card::{EffectCard, InsertIndicator};
-use super::data::{EffectCardKind, EffectId, EffectStackDataSource};
+use super::data::{EffectCardKind, EffectId, EffectStackDataSource, LibraryEffectDrag};
 
 /// Callback the app registers with
 /// [`EffectStackView::params_renderer`] to render the parameter controls of
 /// one effect inside its expanded card.
 ///
-/// Called during render for every expanded card. The returned [`AnyView`]
-/// is placed in the card's content slot; its size drives the expanded
-/// height of the card. Return any empty view (e.g. [`crate::div()`]'s
-/// default) to render a blank parameter area.
+/// Called when a card's parameter area is first shown; the returned
+/// [`AnyView`] is **cached per effect** (so stateful controls — sliders,
+/// checkboxes, text fields — survive re-renders and in-progress drags)
+/// and pruned when the effect leaves the stack. The view is placed in the
+/// card's content slot; its size drives the expanded height of the card.
+/// Return any empty view (e.g. [`crate::div()`]'s default) to render a
+/// blank parameter area.
 pub type ParamsRenderer = Rc<dyn Fn(&EffectId, &mut Window, &mut App) -> AnyView>;
 
 /// Edit requests emitted by [`EffectStackView`].
@@ -85,6 +88,17 @@ pub enum EffectStackEvent {
 	AddRequested {
 		/// Insertion index into the current card list.
 		index: usize,
+	},
+	/// The user dropped an effect dragged from the app's effect library
+	/// onto the stack at a stack position (the payload is
+	/// [`LibraryEffectDrag`](crate::effect_stack::LibraryEffectDrag)).
+	/// Unlike [`AddRequested`](Self::AddRequested) the effect type is
+	/// already chosen, so the app inserts it directly at `index`.
+	AddTypeRequested {
+		/// Insertion index into the current card list.
+		index: usize,
+		/// The dropped effect's type id.
+		type_id: SharedString,
 	},
 	/// The user secondary-clicked a card. The app owns the menu itself —
 	/// the view only reports where and on which card it happened.
@@ -158,6 +172,13 @@ pub struct DragState {
 pub struct EffectStackView<D: EffectStackDataSource> {
 	data: Entity<D>,
 	params_renderer: Option<ParamsRenderer>,
+	/// Per-effect cache of the params view: the renderer creates stateful
+	/// child entities (sliders, checkboxes, text fields), so recreating the
+	/// view on every render would destroy an in-progress drag or click the
+	/// moment any edit notifies. Entries are created on first expansion and
+	/// pruned when their effect leaves the stack; value re-syncs are the
+	/// view's own job (it observes the engine).
+	params_views: std::collections::HashMap<EffectId, AnyView>,
 	focus_handle: FocusHandle,
 	drag_state: DragState,
 }
@@ -173,6 +194,7 @@ impl<D: EffectStackDataSource> EffectStackView<D> {
 		Self {
 			data,
 			params_renderer: None,
+			params_views: std::collections::HashMap::new(),
 			focus_handle: cx.focus_handle(),
 			drag_state: DragState::default(),
 		}
@@ -239,8 +261,7 @@ impl<D: EffectStackDataSource> EffectStackView<D> {
 		card_id: EffectId,
 		event: &DragMoveEvent<EffectId>,
 		cx: &mut Context<Self>,
-	) {
-		let effects = self.data.read(cx).effects();
+	) {		let effects = self.data.read(cx).effects();
 		let dragged = *event.drag(cx);
 		self.drag_state.dragged = Some(dragged);
 		if !event.bounds.contains(&event.event.position) {
@@ -278,6 +299,30 @@ impl<D: EffectStackDataSource> EffectStackView<D> {
 	/// any gesture that should abort an in-progress drag).
 	fn cancel_drag(&mut self, cx: &mut Context<Self>) {
 		self.drag_state = DragState::default();
+		cx.notify();
+	}
+
+	/// Tracks an effect dragged in from the app's effect library
+	/// ([`LibraryEffectDrag`]): the insertion indicator follows the pointer
+	/// exactly like a card reorder, except nothing is being removed (the
+	/// index addresses the current card list directly).
+	fn update_library_drag(
+		&mut self,
+		card_id: EffectId,
+		event: &DragMoveEvent<LibraryEffectDrag>,
+		cx: &mut Context<Self>,
+	) {
+		let effects = self.data.read(cx).effects();
+		if !event.bounds.contains(&event.event.position) {
+			return;
+		}
+		let Some(j) = effects.iter().position(|e| e.id() == card_id) else {
+			self.drag_state.insertion_index = None;
+			cx.notify();
+			return;
+		};
+		let insert_before = event.event.position.y < event.bounds.center().y;
+		self.drag_state.insertion_index = Some(if insert_before { j } else { j + 1 });
 		cx.notify();
 	}
 
@@ -375,6 +420,11 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 			let data = self.data.read(cx);
 			(data.target_label(), data.effects(), data.selected_effect())
 		};
+		// Prune cached params views whose effect left the stack (remove /
+		// undo); live effects keep their view across re-renders so an
+		// in-progress slider drag or click survives edit notifications.
+		self.params_views
+			.retain(|id, _| effects.iter().any(|e| e.id() == *id));
 		let insertion_index = self.drag_state.insertion_index;
 		let dragged_id = self.drag_state.dragged;
 		let i0 = dragged_id.and_then(|d| effects.iter().position(|e| e.id() == d));
@@ -407,6 +457,11 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 				// Runs first (capture phase, registration order): clear the
 				// indicator by default; the per-card listener re-sets it
 				// while the pointer is inside that card.
+				this.drag_state.insertion_index = None;
+				cx.notify();
+			}))
+			.on_drag_move::<LibraryEffectDrag>(cx.listener(|this, _event, _window, cx| {
+				// Same capture-phase clear for an effect-library drag.
 				this.drag_state.insertion_index = None;
 				cx.notify();
 			}))
@@ -575,12 +630,17 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 
 			if expanded && !fixed {
 				if let Some(renderer) = &params_renderer {
+					let params = self
+						.params_views
+						.entry(id)
+						.or_insert_with(|| renderer(&id, window, cx))
+						.clone();
 					wrapper = wrapper.child(
 						div()
 							.id(ElementId::named_usize("effect-params", id.0 as usize))
 							.border_t_1()
 							.border_color(colors.separator)
-							.child(renderer(&id, window, cx)),
+							.child(params),
 					);
 				}
 			}
@@ -603,7 +663,29 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 							cx.notify();
 						},
 					))
-					.can_drop(|payload, _window, _cx| payload.is::<EffectId>());
+					// An effect dragged in from the app's effect library
+					// lands at the indicator position.
+					.on_drag_move::<LibraryEffectDrag>(cx.listener(
+						move |this, event, _window, cx| {
+							this.update_library_drag(id, event, cx);
+						},
+					))
+					.on_drop::<LibraryEffectDrag>(cx.listener(
+						move |this, dragged: &LibraryEffectDrag, _window, cx| {
+							let index = this.drag_state.insertion_index;
+							this.drag_state = DragState::default();
+							if let Some(index) = index {
+								cx.emit(EffectStackEvent::AddTypeRequested {
+									index,
+									type_id: dragged.type_id.clone(),
+								});
+							}
+							cx.notify();
+						},
+					))
+					.can_drop(|payload, _window, _cx| {
+						payload.is::<EffectId>() || payload.is::<LibraryEffectDrag>()
+					});
 			}
 
 			column = column.child(wrapper);

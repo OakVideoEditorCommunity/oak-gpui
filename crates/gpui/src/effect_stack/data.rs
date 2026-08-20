@@ -39,6 +39,18 @@ impl From<u64> for EffectId {
 	}
 }
 
+/// Drag payload of an effect dragged out of the app's effect library onto
+/// an effect stack (or node graph): the factory/plugin type id to insert
+/// plus the display name (used by the drag ghost). Dropping it on a stack
+/// emits [`EffectStackEvent::AddTypeRequested`](crate::effect_stack::EffectStackEvent::AddTypeRequested).
+#[derive(Clone, Debug)]
+pub struct LibraryEffectDrag {
+	/// The addable-effect type id (factory entry or OFX plugin identifier).
+	pub type_id: SharedString,
+	/// The display name, shown on the drag ghost.
+	pub name: SharedString,
+}
+
 /// Which role a card plays in the linear chain.
 ///
 /// A well-formed stack is exactly one [`Source`](EffectCardKind::Source)

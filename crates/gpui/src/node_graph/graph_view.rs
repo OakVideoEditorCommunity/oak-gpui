@@ -303,6 +303,14 @@ impl<D: NodeGraphDataSource + 'static> NodeGraphView<D> {
 		&self.state
 	}
 
+	/// The graph-space position of a window-space point (e.g. the pointer
+	/// position of a drop landing on the canvas). Uses the viewport origin
+	/// captured at the last prepaint.
+	pub fn graph_position_at(&self, window_position: Point<Pixels>) -> Point<Pixels> {
+		self.state
+			.screen_to_graph(window_position - self.viewport.origin)
+	}
+
 	/// Returns the size of the canvas the graph was last painted into, or a
 	/// zero size before the first frame. Hosts use this to fit the viewport
 	/// to the graph (see [`GraphViewState::fit_to_rect`]).
