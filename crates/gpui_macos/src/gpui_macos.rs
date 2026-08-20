@@ -6,6 +6,7 @@
 
 mod dispatcher;
 mod display;
+mod display_colorspace;
 mod display_link;
 mod events;
 mod haptic_feedback;

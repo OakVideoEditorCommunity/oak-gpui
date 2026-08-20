@@ -251,6 +251,20 @@ impl MetalRenderer {
 			];
 		}
 
+		// Color management coordination: when the app self-manages the
+		// display transform (OAK_MACOS_LAYER_COLORSPACE=display, set at
+		// startup when display-ICC color management is active), tag the
+		// layer with the DISPLAY's colorspace so ColorSync's mapping
+		// becomes a pass-through — otherwise the OS would re-correct our
+		// already-corrected pixels (double correction).
+		if std::env::var_os("OAK_MACOS_LAYER_COLORSPACE").as_deref()
+			== Some(std::ffi::OsStr::new("display"))
+		{
+			crate::display_colorspace::with_main_display_colorspace(|space| unsafe {
+				let _: () = msg_send![&*layer, setColorspace: space];
+			});
+		}
+
 		Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
 	}
 
