@@ -244,6 +244,11 @@ impl Render for TabBar {
 			.h(px(26.0))
 			.w_full()
 			.overflow_hidden()
+			// The strip reads as raised chrome above the panel content, closed
+			// off by a hairline border (per the design's dense panel headers).
+			.bg(colors.container)
+			.border_b_1()
+			.border_color(colors.border)
 			.on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
 				let delta = match event.delta {
 					ScrollDelta::Pixels(delta) => delta.x.0,
@@ -278,6 +283,9 @@ impl Render for TabBar {
 
 		for (index, &panel) in self.tabs.iter().enumerate() {
 			let active = index == self.active;
+			// The hover fill for inactive tabs, hoisted out of the closure so
+			// the shared `colors` isn't moved (it is behind an `Arc`).
+			let inactive_hover = colors.background;
 			let title = self
 				.titles
 				.get(index)
@@ -310,12 +318,26 @@ impl Render for TabBar {
 				.whitespace_nowrap()
 				.cursor_pointer()
 				.text_sm()
+				// The active tab is the accent-filled chip of the design;
+				// inactive tabs sit flat on the strip with dimmed labels and
+				// surface on hover.
 				.bg(if active {
 					colors.selected
 				} else {
-					colors.background
+					colors.container
 				})
-				.text_color(if active { colors.text } else { colors.disabled })
+				.text_color(if active {
+					colors.selected_text
+				} else {
+					colors.disabled
+				})
+				.hover(move |style| {
+					if active {
+						style
+					} else {
+						style.bg(inactive_hover)
+					}
+				})
 				.on_click(cx.listener(move |this, _event: &ClickEvent, window, cx| {
 					this.activate(index, window, cx);
 				}))

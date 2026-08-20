@@ -240,9 +240,11 @@ impl RenderOnce for TimelineRuler {
 			},
 			move |bounds, content, window, cx| {
 				let baseline_color = hsla(0.0, 0.0, 0.5, 0.5);
-				let major_color = hsla(0.0, 0.0, 0.6, 0.9);
-				let minor_color = hsla(0.0, 0.0, 0.6, 0.45);
-				let text_color = hsla(0.0, 0.0, 0.5, 1.0);
+				let major_color = hsla(0.0, 0.0, 0.55, 0.9);
+				let minor_color = hsla(0.0, 0.0, 0.55, 0.4);
+				// Ruler labels read as the design's muted light gray against
+				// the near-black ruler strip.
+				let text_color = hsla(0.0, 0.0, 0.62, 1.0);
 				let band_color = hsla(0.63, 0.55, 0.55, 0.10);
 				let bottom = bounds.bottom();
 

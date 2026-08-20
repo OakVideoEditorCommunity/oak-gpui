@@ -173,6 +173,9 @@ impl Render for SpinBox {
 					.border_1()
 					.border_color(colors.border)
 					.bg(colors.background)
+					// Editable values render in the theme's amber (the
+					// design's gold numerals), distinct from labels.
+					.text_color(crate::theme::current_theme(cx).link)
 					.px_1()
 					.flex()
 					.items_center()

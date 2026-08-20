@@ -256,9 +256,10 @@ impl NodeElement {
 		window.paint_quad(fill(bounds, colors.background));
 
 		// Border quad: transparent fill, themed border (accent when selected).
+		// The 6px corner matches the design's softly rounded node cards.
 		window.paint_quad(PaintQuad {
 			bounds,
-			corner_radii: Corners::all(px(4.0) * zoom),
+			corner_radii: Corners::all(px(6.0) * zoom),
 			background: hsla(0.0, 0.0, 0.0, 0.0).into(),
 			border_widths: Edges::all(if self.visual.selected {
 				px(1.5)

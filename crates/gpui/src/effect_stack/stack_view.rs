@@ -439,7 +439,15 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 				.child(label),
 		);
 
-		let mut column = div().id("effect-stack-cards").flex().flex_col().w_full();
+		// Cards breathe as separate rounded panels (the design's stack), not
+		// as a contiguous list.
+		let mut column = div()
+			.id("effect-stack-cards")
+			.flex()
+			.flex_col()
+			.w_full()
+			.gap_2()
+			.p_2();
 
 		for (index, effect) in effects.iter().enumerate() {
 			let id = effect.id();
@@ -458,7 +466,9 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 			}
 
 			// Header row: drag handle, enable toggle, the card itself
-			// (flexing to fill), and the remove button.
+			// (flexing to fill), and the remove button. Effect cards get the
+			// design's two-tone treatment: a raised header strip over the
+			// darker card body.
 			let mut header_row = div()
 				.id(ElementId::named_usize("effect-header", id.0 as usize))
 				.flex()
@@ -471,6 +481,9 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 					cx.stop_propagation();
 					this.context_menu(id, event.position(), cx);
 				}));
+			if !fixed {
+				header_row = header_row.bg(colors.container);
+			}
 
 			if !fixed {
 				header_row = header_row.cursor_pointer().on_click(cx.listener(
@@ -545,15 +558,17 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 				.border_1()
 				.border_color(if selected_effect == Some(id) {
 					colors.selected
-				} else if fixed {
+				} else {
 					colors.border
-				} else {
-					colors.separator
 				})
-				.bg(if fixed {
-					colors.container
-				} else {
-					colors.background
+				// The source card is the design's accent-tinted media bar; the
+				// output card and effect bodies stay neutral.
+				.bg(match effect.kind() {
+					EffectCardKind::Source => {
+						crate::Background::from(crate::Hsla::from(colors.selected).opacity(0.3))
+					}
+					EffectCardKind::Output => crate::Background::from(colors.container),
+					EffectCardKind::Effect => crate::Background::from(colors.background),
 				})
 				.overflow_hidden();
 			wrapper = wrapper.child(header_row);

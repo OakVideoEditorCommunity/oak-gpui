@@ -21,7 +21,10 @@
 //! `TimelineEvent::TrackToggleRequested`); without a handler they render as
 //! inert status glyphs.
 
-use crate::{App, ClickEvent, ElementId, Hsla, SharedString, Window, div, hsla, prelude::*, px};
+use crate::{
+	App, ClickEvent, ElementId, SharedString, Window, colors::DefaultColors, div, hsla, prelude::*,
+	px,
+};
 
 use super::data::TrackKind;
 
@@ -123,24 +126,6 @@ impl TrackHeader {
 		self.index
 	}
 
-	/// The background tint for a track of `kind`.
-	fn kind_background(kind: TrackKind) -> Hsla {
-		match kind {
-			TrackKind::Video => hsla(0.58, 0.45, 0.32, 0.18),
-			TrackKind::Audio => hsla(0.35, 0.45, 0.32, 0.18),
-			TrackKind::Subtitle => hsla(0.10, 0.45, 0.32, 0.18),
-		}
-	}
-
-	/// The label color for a track of `kind`.
-	fn kind_text(kind: TrackKind) -> Hsla {
-		match kind {
-			TrackKind::Video => hsla(0.58, 0.35, 0.85, 1.0),
-			TrackKind::Audio => hsla(0.35, 0.35, 0.85, 1.0),
-			TrackKind::Subtitle => hsla(0.10, 0.35, 0.85, 1.0),
-		}
-	}
-
 	/// A small toggle glyph (one or two letters) reflecting `active`. When an
 	/// [`Self::on_toggle`] handler is installed the glyph is a click target
 	/// emitting `event`; the click stops propagating so it never toggles the
@@ -205,14 +190,16 @@ impl TrackHeader {
 }
 
 impl RenderOnce for TrackHeader {
-	fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-		let background = Self::kind_background(self.kind);
-		let text = Self::kind_text(self.kind);
+	fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+		// Neutral chrome per the design: the header cell sits on the panel
+		// container color with primary-text labels; the track kind is conveyed
+		// by the toggle glyphs, not by a tinted background.
+		let colors = cx.default_colors().clone();
 		let separator_height = px(TrackHeader::SEPARATOR_HEIGHT);
 
 		div()
 			.size_full()
-			.bg(background)
+			.bg(colors.container)
 			.flex()
 			.flex_col()
 			.child(
@@ -223,7 +210,12 @@ impl RenderOnce for TrackHeader {
 					.items_center()
 					.gap(px(6.))
 					.px_2()
-					.child(div().text_sm().text_color(text).child(self.name.clone()))
+					.child(
+						div()
+							.text_sm()
+							.text_color(colors.text)
+							.child(self.name.clone()),
+					)
 					.child(div().flex_1())
 					.child(self.toggle_row()),
 			)

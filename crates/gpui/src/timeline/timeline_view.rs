@@ -1655,9 +1655,9 @@ fn drag_ghost<T>(
 	cx.new(|_cx| DragPreview)
 }
 
-/// The playhead line color.
+/// The playhead line color: the design's accent-blue vertical line.
 fn playhead_color() -> Hsla {
-	hsla(0.0, 0.0, 0.9, 0.9)
+	hsla(0.60, 0.90, 0.60, 1.0)
 }
 
 /// Reshapes the work-area band for a ruler drag move.
@@ -1930,10 +1930,13 @@ mod tests {
 }
 
 /// The default body color for clips on a track of `kind`.
+///
+/// Per the design both media kinds read as green bars (the audio waveform
+/// supplies the contrast); subtitles keep the amber family.
 fn kind_color(kind: TrackKind) -> Hsla {
 	match kind {
-		TrackKind::Video => hsla(0.58, 0.45, 0.35, 1.0),
-		TrackKind::Audio => hsla(0.35, 0.45, 0.35, 1.0),
+		TrackKind::Video => hsla(0.40, 0.44, 0.43, 1.0),
+		TrackKind::Audio => hsla(0.38, 0.45, 0.36, 1.0),
 		TrackKind::Subtitle => hsla(0.10, 0.45, 0.35, 1.0),
 	}
 }

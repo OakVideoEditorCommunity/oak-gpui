@@ -45,18 +45,22 @@ fn rgba(hex: u32) -> Rgba {
 
 impl OakTheme {
 	/// The olive-dark palette (oak's default).
+	///
+	/// Tuned to the design's professional dark scheme: a near-black content
+	/// base, slightly raised panel containers, a low-contrast separator and a
+	/// dimmed secondary text — the blue accent stays the single saturated hue.
 	pub fn olive_dark() -> Self {
 		Self {
 			name: "Olive Dark".into(),
-			window: rgba(0x353535),
-			base: rgba(0x191919),
-			alternate_base: rgba(0x353535),
-			text: rgb(0xffffff),
+			window: rgba(0x23272D),
+			base: rgba(0x16181D),
+			alternate_base: rgba(0x2E333B),
+			text: rgb(0xE8EAED),
 			accent: rgba(0x2A82DA),
 			accent_text: rgb(0xffffff),
 			link: rgba(0xE0B040),
-			disabled_text: rgba(0xA0A0A0),
-			disabled_button_text: rgba(0x808080),
+			disabled_text: rgba(0x7D838C),
+			disabled_button_text: rgba(0x565C66),
 		}
 	}
 

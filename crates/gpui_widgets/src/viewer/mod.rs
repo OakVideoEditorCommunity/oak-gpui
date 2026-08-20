@@ -414,11 +414,15 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			.px_2()
 			.py_0p5()
 			.bg(colors.container)
+			.border_t_1()
+			.border_color(colors.border)
 			.child(transport_button(
 				"gpui-widgets-viewer-in",
 				in_icon,
 				"⏮",
 				crate::i18n::tr("viewer.in_point", "入点"),
+				false,
+				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
 					this.emit(
 						ViewerEvent::InPointRequested {
@@ -433,6 +437,8 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 				step_back_icon,
 				"⏪",
 				crate::i18n::tr("viewer.step_back", "上一帧"),
+				false,
+				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
 					this.emit(
 						ViewerEvent::StepRequested {
@@ -452,6 +458,8 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 				} else {
 					crate::i18n::tr("viewer.play", "播放")
 				},
+				true,
+				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
 					let event = if this.transport.playing {
 						ViewerEvent::PauseRequested {
@@ -470,6 +478,8 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 				step_forward_icon,
 				"⏩",
 				crate::i18n::tr("viewer.step_forward", "下一帧"),
+				false,
+				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
 					this.emit(
 						ViewerEvent::StepRequested {
@@ -485,6 +495,8 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 				out_icon,
 				"⏭",
 				crate::i18n::tr("viewer.out_point", "出点"),
+				false,
+				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
 					this.emit(
 						ViewerEvent::OutPointRequested {
@@ -499,6 +511,8 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 				None,
 				x_glyph(colors.text),
 				crate::i18n::tr("viewer.clear_range", "清除入出点"),
+				false,
+				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
 					this.emit(
 						ViewerEvent::ClearRangeRequested {
@@ -508,11 +522,19 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 					);
 				}),
 			))
-			.child(div().px_2().text_xs().text_color(colors.text).child(timecode))
+			// The current timecode reads in the design's bright green.
+			.child(
+				div()
+					.px_2()
+					.text_xs()
+					.text_color(gpui::hsla(0.33, 0.75, 0.62, 1.0))
+					.child(timecode),
+			)
 			.child(div().flex_1())
 			.child(button(
 				"gpui-widgets-viewer-safe",
 				crate::i18n::tr("viewer.safe_frames", "安全框"),
+				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
 					this.show_safe_frames = !this.show_safe_frames;
 					this.emit(
@@ -526,6 +548,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			.child(button(
 				"gpui-widgets-viewer-zoom",
 				crate::i18n::tr("viewer.zoom", "缩放"),
+				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
 					this.zoom = !this.zoom;
 					this.emit(
@@ -550,14 +573,20 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 
 /// A transport icon button: a 16px icon on a 24px hit target with a
 /// localized tooltip. Falls back to the `fallback` glyph when `icon` is
-/// `None` (no resolver registered, or no file for the name).
+/// `None` (no resolver registered, or no file for the name). `primary` marks
+/// the design's accent-filled play/pause button; the rest are flat buttons
+/// that surface on hover.
 fn transport_button(
 	id: &'static str,
 	icon: Option<std::path::PathBuf>,
 	fallback: impl IntoElement,
 	tooltip: SharedString,
+	primary: bool,
+	colors: &gpui::colors::Colors,
 	on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+	let background = colors.selected;
+	let hover = colors.container;
 	let mut el = div()
 		.id(id)
 		.debug_selector(move || id.into())
@@ -568,7 +597,19 @@ fn transport_button(
 		.justify_center()
 		.rounded_md()
 		.cursor_pointer()
-		.hover(|style| style.bg(gpui::colors::Colors::dark().selected))
+		.text_color(if primary {
+			colors.selected_text
+		} else {
+			colors.text
+		})
+		.when(primary, |style| style.bg(background))
+		.hover(move |style| {
+			if primary {
+				style.bg(background)
+			} else {
+				style.bg(hover)
+			}
+		})
 		.tooltip(move |window, cx| tooltip_view(tooltip.clone(), window, cx))
 		.on_click(on_click);
 	if let Some(path) = icon {
@@ -609,20 +650,27 @@ fn x_glyph(color: gpui::Rgba) -> impl IntoElement {
 	)
 }
 
-/// A small labeled button.
+/// A small labeled button, styled as the design's bordered chip (the "适合 /
+/// 安全框" controls at the transport bar's right end).
 fn button(
 	id: &'static str,
 	label: impl IntoElement,
+	colors: &gpui::colors::Colors,
 	on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+	let border = colors.border;
+	let hover = colors.separator;
 	div()
 		.id(id)
 		.debug_selector(move || id.into())
 		.px_2()
 		.py_0p5()
 		.rounded_md()
+		.border_1()
+		.border_color(border)
+		.text_color(colors.text)
 		.cursor_pointer()
-		.hover(|style| style.bg(gpui::colors::Colors::dark().selected))
+		.hover(move |style| style.bg(hover))
 		.on_click(on_click)
 		.child(label)
 }

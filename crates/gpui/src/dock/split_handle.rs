@@ -9,7 +9,8 @@
 use crate::colors::DefaultColors;
 use crate::{
 	App, AppContext, Axis, ClickEvent, Context, ElementId, EventEmitter, InteractiveElement,
-	IntoElement, Pixels, Point, Render, StatefulInteractiveElement, Styled, Window, div, px,
+	IntoElement, ParentElement, Pixels, Point, Render, StatefulInteractiveElement, Styled, Window,
+	div, px,
 };
 
 use super::{NodePath, path_key};
@@ -194,13 +195,21 @@ impl Render for SplitHandle {
 			cx.new(|_cx| SplitDragGhost { direction })
 		};
 
+		// The hitbox stays HITBOX-wide for grabbability, but the visible
+		// divider is a centered 1px hairline — the design separates panels
+		// with thin lines, not thick bars.
+		let line = div()
+			.flex_none()
+			.bg(colors.separator);
 		let mut root = div()
 			.id(ElementId::named_usize(
 				"dock-split-handle",
 				path_key(&self.path),
 			))
 			.flex_none()
-			.bg(colors.separator)
+			.flex()
+			.items_center()
+			.justify_center()
 			.on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
 				if event.click_count() >= 2 {
 					this.reset(cx);
@@ -209,14 +218,18 @@ impl Render for SplitHandle {
 
 		// A horizontal split stacks children side by side, so its divider is
 		// a vertical bar and vice versa.
-		match direction {
-			Axis::Horizontal => {
-				root = root.w(px(Self::HITBOX.0)).h_full().cursor_col_resize();
-			}
-			Axis::Vertical => {
-				root = root.w_full().h(px(Self::HITBOX.0)).cursor_row_resize();
-			}
-		}
+		root = match direction {
+			Axis::Horizontal => root
+				.w(px(Self::HITBOX.0))
+				.h_full()
+				.cursor_col_resize()
+				.child(line.w(px(1.0)).h_full()),
+			Axis::Vertical => root
+				.w_full()
+				.h(px(Self::HITBOX.0))
+				.cursor_row_resize()
+				.child(line.w_full().h(px(1.0))),
+		};
 
 		root.on_drag(
 			SplitHandleDrag {
