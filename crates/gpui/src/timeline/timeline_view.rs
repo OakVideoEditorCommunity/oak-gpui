@@ -70,7 +70,8 @@ use std::sync::{Arc, RwLock};
 use crate::{
 	AnyElement, App, Context, DragMoveEvent, ElementId, Entity, EventEmitter, FocusHandle,
 	Focusable, Hsla, MouseButton, MouseDownEvent, PinchEvent, Pixels, Point, Render, ScrollDelta,
-	ScrollWheelEvent, SharedString, Window, canvas, div, hsla, prelude::*, px,
+	ScrollWheelEvent, SharedString, Window, canvas, colors::DefaultColors, div, hsla, prelude::*,
+	px,
 };
 
 use super::{
@@ -520,6 +521,8 @@ impl<D: TimelineDataSource> TimelineView<D> {
 		}
 		drag.new_start = new_start;
 		drag.new_track = new_track;
+		// Repaint so the move ghost follows the resolved target track/frame.
+		cx.notify();
 	}
 
 	/// Updates a trim drag from the pointer position: computes the new
@@ -622,6 +625,7 @@ impl<D: TimelineDataSource> TimelineView<D> {
 
 	/// Emits [`TimelineEvent::ClipMoveRequested`] for a finished clip move,
 	/// unless the gesture didn't move the clip or a locked track was involved.
+	/// Always repaints so the move ghost disappears after the drop.
 	fn finish_clip_drag(&mut self, drag: &Arc<RwLock<ClipDrag>>, cx: &mut Context<Self>) {
 		let (clip, original_start, original_track, new_start, new_track) = {
 			let drag = drag.read().expect("clip drag lock is not poisoned");
@@ -642,8 +646,8 @@ impl<D: TimelineDataSource> TimelineView<D> {
 				new_track,
 				new_start,
 			});
-			cx.notify();
 		}
+		cx.notify();
 	}
 
 	/// Emits [`TimelineEvent::ClipTrimRequested`] for a finished trim.
@@ -926,6 +930,44 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 		// The marquee handler needs the row geometry; keep a snapshot for it
 		// (the clip-area child iterator consumes `rows` below).
 		let marquee_rows = Arc::new(rows.clone());
+
+		// The clip-move ghost geometry: while a clip drag is active, the
+		// overlay shows the resolved target track + frame so the user sees
+		// where the clip will land (including across tracks), matching the
+		// footage-drop ghost in the host panel. `None` outside a clip drag.
+		let clip_ghost = cx.active_drag.as_ref().and_then(|drag| {
+			let drag = drag.value.downcast_ref::<Arc<RwLock<ClipDrag>>>()?;
+			let drag = drag.read().ok()?;
+			Some(clip_ghost_rect(
+				drag.new_start,
+				drag.new_track,
+				drag.original_length,
+				state.zoom,
+				state.scroll_offset.x,
+				&rows,
+			))
+		});
+		let clip_ghost_element: AnyElement = match clip_ghost {
+			Some(rect) => {
+				let colors = cx.default_colors().clone();
+				div()
+					.absolute()
+					.left(rect.x)
+					.top(rect.y)
+					.w(rect.width)
+					.h(rect.height)
+					.rounded_sm()
+					.border_1()
+					.border_color(colors.selected)
+					.bg(crate::Rgba {
+						a: 0.35,
+						..colors.selected
+					})
+					.into_any_element()
+			}
+			None => div().into_any_element(),
+		};
+
 		let playhead_x = state.point_at_frame(state.playhead).0;
 		let decorator = self.decorator.clone();
 
@@ -1406,12 +1448,16 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 									original_track: row_index,
 									new_start: clip.range.start,
 									new_track: row_index,
+									original_length: clip.range.len(),
 								})),
 								drag_ghost,
 							)
 							.children(children)
 					}))
-			}));
+			}))
+			// The clip-move ghost overlays the rows (an absolute child of the
+			// clip area; an empty div when no clip drag is active).
+			.child(clip_ghost_element);
 
 		let playhead = div()
 			.absolute()
@@ -1468,6 +1514,9 @@ struct ClipDrag {
 	original_track: usize,
 	new_start: Frame,
 	new_track: usize,
+	/// The clip's own length in frames at drag start (the move ghost's
+	/// extent).
+	original_length: Frame,
 }
 
 /// Shared state for a trim gesture; see [`TrimEdge`].
@@ -1523,6 +1572,68 @@ struct ClipRenderData {
 	enabled: bool,
 	in_transition: Option<FrameRange>,
 	out_transition: Option<FrameRange>,
+}
+
+/// The on-screen geometry of a clip-move ghost: the translucent overlay shown
+/// on the target track while a clip is dragged (the same visual language as
+/// the footage-drop ghost the host paints in its timeline panel).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ClipGhostRect {
+	/// Left edge in clip-area pixels.
+	x: Pixels,
+	/// Top edge relative to the clip area's top.
+	y: Pixels,
+	/// Width spanning the clip's own length.
+	width: Pixels,
+	/// Height of the target track's row.
+	height: Pixels,
+}
+
+/// Resolves the clip-move ghost rect from a drag's target frame + track and
+/// the clip's own length: `x` is `new_start` in clip-area pixels (zoomed and
+/// scroll-compensated, matching [`TimelineState::point_at_frame`]), `y`
+/// accumulates the row heights above `new_track`, and the rect spans `length`
+/// frames at the target row's height.
+///
+/// Pure — the frame/track → rect conversion is unit-tested directly.
+fn clip_ghost_rect(
+	new_start: Frame,
+	new_track: usize,
+	length: Frame,
+	zoom: f32,
+	scroll_x: Pixels,
+	rows: &[RowData],
+) -> ClipGhostRect {
+	let mut y = 0.0f32;
+	let mut last_top = 0.0f32;
+	for row in rows {
+		if row.index == new_track {
+			return ClipGhostRect {
+				x: px(new_start.0 as f32 * zoom) - scroll_x,
+				y: px(y),
+				width: px(length.0 as f32 * zoom).max(px(4.0)),
+				height: px(row.height),
+			};
+		}
+		last_top = y;
+		y += row.height;
+	}
+	// Target index beyond the last row (a track vanished mid-drag): clamp to
+	// the last row's band, mirroring `track_at_y`'s fallback.
+	match rows.last() {
+		Some(last) => ClipGhostRect {
+			x: px(new_start.0 as f32 * zoom) - scroll_x,
+			y: px(last_top),
+			width: px(length.0 as f32 * zoom).max(px(4.0)),
+			height: px(last.height),
+		},
+		None => ClipGhostRect {
+			x: px(new_start.0 as f32 * zoom) - scroll_x,
+			y: px(0.0),
+			width: px(length.0 as f32 * zoom).max(px(4.0)),
+			height: px(MIN_TRACK_HEIGHT),
+		},
+	}
 }
 
 /// The ghost rendered under the cursor during any timeline drag.
@@ -1622,6 +1733,68 @@ mod tests {
 		// base for edge moves.
 		let reshaped = reshape_work_area(None, Frame(0), Frame(40), EdgeKind::Out, 1000);
 		assert_eq!(reshaped, FrameRange::new(Frame(0), Frame(40)));
+	}
+
+	/// A minimal row snapshot for the ghost-rect math (the rect only reads
+	/// `index` and `height`; the rest stay at inert defaults).
+	fn ghost_row(index: usize, height: f32) -> RowData {
+		RowData {
+			index,
+			name: SharedString::from(format!("V{}", index + 1)),
+			kind: TrackKind::Video,
+			height,
+			y: 0.0,
+			locked: false,
+			muted: false,
+			solo: false,
+			visible: true,
+			clips: Vec::new(),
+		}
+	}
+
+	#[test]
+	fn clip_ghost_rect_maps_target_frame_and_track() {
+		let rows = vec![ghost_row(0, 48.0), ghost_row(1, 64.0), ghost_row(2, 32.0)];
+		// Target frame 100 at zoom 2, scrolled by 40 px: x = 200 - 40.
+		let rect = clip_ghost_rect(Frame(100), 1, Frame(25), 2.0, px(40.0), &rows);
+		assert_eq!(rect.x, px(160.0));
+		// y accumulates the rows above track 1 (row 0's 48 px).
+		assert_eq!(rect.y, px(48.0));
+		// The ghost spans the clip's own length at the target row's height.
+		assert_eq!(rect.width, px(50.0));
+		assert_eq!(rect.height, px(64.0));
+	}
+
+	#[test]
+	fn clip_ghost_rect_follows_cross_track_drag() {
+		let rows = vec![ghost_row(0, 48.0), ghost_row(1, 64.0), ghost_row(2, 32.0)];
+		// Dragged to track 2: y = 48 + 64, height = row 2's height.
+		let rect = clip_ghost_rect(Frame(30), 2, Frame(10), 1.0, px(0.0), &rows);
+		assert_eq!(rect.y, px(112.0));
+		assert_eq!(rect.height, px(32.0));
+		assert_eq!(rect.x, px(30.0));
+		assert_eq!(rect.width, px(10.0));
+	}
+
+	#[test]
+	fn clip_ghost_rect_clamps_out_of_range_track_to_last_row() {
+		let rows = vec![ghost_row(0, 48.0), ghost_row(1, 64.0)];
+		// A track index beyond the last row (track removed mid-drag) lands
+		// on the last row's band, mirroring `track_at_y`'s fallback.
+		let rect = clip_ghost_rect(Frame(5), 7, Frame(3), 1.0, px(0.0), &rows);
+		assert_eq!(rect.y, px(48.0));
+		assert_eq!(rect.height, px(64.0));
+
+		// With no rows at all the rect falls back to the minimum row height.
+		let empty = clip_ghost_rect(Frame(5), 0, Frame(3), 1.0, px(0.0), &[]);
+		assert_eq!(empty.height, px(MIN_TRACK_HEIGHT));
+	}
+
+	#[test]
+	fn clip_ghost_rect_never_collapses_below_four_pixels() {
+		let rows = vec![ghost_row(0, 48.0)];
+		let rect = clip_ghost_rect(Frame(0), 0, Frame(1), 0.01, px(0.0), &rows);
+		assert_eq!(rect.width, px(4.0));
 	}
 
 	/// A minimal data source for the interaction tests: one video track, no

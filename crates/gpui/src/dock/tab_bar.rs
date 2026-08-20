@@ -97,14 +97,18 @@ impl TabBar {
 	/// Estimated rendered width of a tab for its title: tabs size to their
 	/// content (the design shows full `<面板>·<名称>` labels), so drag
 	/// hit-testing estimates each tab's width from the title — CJK glyphs are
-	/// full-width, ASCII roughly half — plus the horizontal padding. Only the
-	/// cached drag geometry uses this; the layout itself measures the text.
-	fn estimated_width(title: &str) -> Pixels {
+	/// full-width, ASCII roughly half — plus the horizontal padding and, for
+	/// closable tabs, the right-aligned close button. Only the cached drag
+	/// geometry uses this; the layout itself measures the text.
+	fn estimated_width(title: &str, closable: bool) -> Pixels {
 		let units: f32 = title
 			.chars()
 			.map(|ch| if ch.is_ascii() { 0.55 } else { 1.0 })
 			.sum();
-		Pixels((units * 13.0 + 20.0).max(Self::MIN_TAB_WIDTH.0))
+		// The tab's px-2 horizontal padding plus, for closable tabs, the ✕
+		// button and its px-0.5 padding.
+		let chrome = 20.0 + if closable { 16.0 } else { 0.0 };
+		Pixels((units * 13.0 + chrome).max(Self::MIN_TAB_WIDTH.0))
 	}
 
 	/// Creates a strip for the given tabs; `active` is clamped into range.
@@ -224,6 +228,7 @@ impl Render for TabBar {
 				.map(|(index, &panel)| {
 					let width = Self::estimated_width(
 						self.titles.get(index).map(|t| t.as_ref()).unwrap_or(""),
+						self.closable.get(index).copied().unwrap_or(false),
 					);
 					let tab = TabGeometry { panel, x: Pixels(x), width };
 					x += width.0;
@@ -293,6 +298,10 @@ impl Render for TabBar {
 
 			let mut tab = div()
 				.id(ElementId::named_usize("dock-tab", panel.raw() as usize))
+				.debug_selector(move || format!("dock-tab-{}", panel.raw()))
+				.flex()
+				.flex_row()
+				.items_center()
 				.min_w(px(Self::MIN_TAB_WIDTH.0))
 				.px_2()
 				.flex_none()
@@ -307,11 +316,14 @@ impl Render for TabBar {
 					colors.background
 				})
 				.text_color(if active { colors.text } else { colors.disabled })
-				.child(title)
 				.on_click(cx.listener(move |this, _event: &ClickEvent, window, cx| {
 					this.activate(index, window, cx);
 				}))
 				.on_drag(panel, ghost_ctor);
+
+			// The title fills the tab so the close button pins to its right
+			// edge; truncation keeps overflowing titles from pushing it out.
+			tab = tab.child(div().flex_1().min_w_0().truncate().child(title));
 
 			if closable {
 				tab = tab.child(
@@ -320,9 +332,17 @@ impl Render for TabBar {
 							"dock-tab-close",
 							panel.raw() as usize,
 						))
+						.debug_selector(move || format!("dock-tab-close-{}", panel.raw()))
+						.flex_none()
 						.cursor_pointer()
+						.rounded_sm()
+						.px_0p5()
 						.text_xs()
-						.text_color(colors.disabled)
+						// Full-contrast text so the affordance is actually
+						// visible next to the dimmed inactive tab label; the
+						// hover surfaces the button like the app's chips.
+						.text_color(colors.text)
+						.hover(|style| style.bg(colors.container))
 						.child("✕")
 						.on_click(cx.listener(move |_this, _event: &ClickEvent, _window, cx| {
 							cx.stop_propagation();

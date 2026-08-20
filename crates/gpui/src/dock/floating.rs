@@ -1,31 +1,15 @@
 //! Floating (undocked) panels.
 //!
-//! # Status
-//!
-//! Floating panels require spawning one OS window per floated panel, sharing
-//! entities across windows, and dragging between windows. GPUI's multi-window
-//! support (multiple `cx.open_window` roots sharing an [`App`](crate::App))
-//! is sufficient in principle, but drag-and-drop *across* windows and
-//! focus/activation semantics are unverified. Until that is proven,
-//! [`DockArea::float_panel`](crate::dock::DockArea::float_panel) always
-//! returns `false` and this module's view type is never constructed by the
-//! dock machinery itself; it remains available so a caller can host a panel
-//! in its own window.
-//!
-//! # Intended API
-//!
-//! - [`DockArea::float_panel`](crate::dock::DockArea::float_panel) removes a
-//!   panel from the layout tree and opens it in its own borderless-chrome
-//!   window hosting a [`FloatingPanelWindow`].
-//! - [`FloatingPanelWindow`] renders the panel plus a title bar that acts as
-//!   a drag surface; dropping the window back over a dock area re-docks the
-//!   panel at the hovered [`DropTarget`](crate::dock::DropTarget).
-//! - Floating windows are recorded in
-//!   [`DockLayoutState::floating`](crate::dock::DockLayoutState::floating) so
-//!   sessions restore them in place.
-//!
-//! Everything here is subject to change when the feature is implemented for
-//! real.
+//! Tearing a tab out of a dock area (dropping it outside the dock) opens the
+//! panel in its own OS window hosted by [`FloatingPanelWindow`]; closing that
+//! window returns the panel to the dock at its original position. The window
+//! lifecycle lives in [`DockArea::float_panel`](crate::dock::DockArea::float_panel):
+//! it removes the panel from the layout, opens the window, and registers a
+//! close hook that extracts the [`PanelHandle`] back out of the closing
+//! window's root view and re-docks it. Closing the window for good (via the
+//! Window menu, which has no re-dock) is signalled through a shared
+//! [`std::sync::atomic`] flag set by
+//! [`DockArea::close_floating`](crate::dock::DockArea::close_floating).
 
 use crate::colors::DefaultColors;
 use crate::dock::PanelHandle;
@@ -36,18 +20,16 @@ use crate::{
 
 /// A window hosting a single undocked panel.
 ///
-/// See the [module documentation](crate::dock) — floating support is not yet
-/// wired into [`DockArea`](crate::dock::DockArea), so this view is only
-/// constructed by callers that host a panel in their own window.
-///
-/// The window renders a minimal title bar (panel title, re-dock drag surface,
-/// close button) above the panel's view, and reports its bounds back to the
-/// owning [`DockArea`](crate::dock::DockArea) so
-/// [`DockLayoutState`](crate::dock::DockLayoutState) can restore the window
-/// geometry.
+/// Created by [`DockArea::float_panel`](crate::dock::DockArea::float_panel)
+/// when a tab is dropped outside the dock. The window renders a minimal title
+/// bar (panel title) above the panel's view. The [`PanelHandle`] is stored in
+/// an `Option` so it can be extracted when the window closes (see
+/// [`take_panel`](FloatingPanelWindow::take_panel)) and re-docked by the
+/// owning dock area instead of being dropped with the window.
 pub struct FloatingPanelWindow {
-	/// The panel hosted by this window.
-	panel: PanelHandle,
+	/// The panel hosted by this window, or `None` once the window is closing
+	/// and the dock area has reclaimed the handle.
+	panel: Option<PanelHandle>,
 	/// Last known window position, mirrored into layout snapshots.
 	#[allow(dead_code)] // read once floating-window geometry is persisted
 	origin: Point<Pixels>,
@@ -69,15 +51,32 @@ impl FloatingPanelWindow {
 		let origin = initial_bounds
 			.map(|bounds| bounds.get_bounds().origin)
 			.unwrap_or_else(|| Point::new(px(0.0), px(0.0)));
-		Self { panel, origin }
+		Self {
+			panel: Some(panel),
+			origin,
+		}
+	}
+
+	/// Takes the hosted panel out of this window, so the caller can re-dock it
+	/// after the window closes.
+	///
+	/// Called by the dock area's close hook while the window is still alive;
+	/// returns `None` on a second call.
+	pub fn take_panel(&mut self) -> Option<PanelHandle> {
+		self.panel.take()
 	}
 }
 
 impl Render for FloatingPanelWindow {
 	fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
 		let _ = window;
-		let title = self.panel.title().clone();
-		let view = self.panel.view().clone();
+		let Some(panel) = &self.panel else {
+			// The panel was reclaimed while the window was closing; render an
+			// empty frame so the teardown is painless.
+			return div().size_full().bg(cx.default_colors().clone().background);
+		};
+		let title = panel.title().clone();
+		let view = panel.view().clone();
 		div()
 			.flex()
 			.flex_col()

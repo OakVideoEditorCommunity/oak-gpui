@@ -1,6 +1,7 @@
 //! The [`DockArea`] view: hosts panels, renders the layout tree, and handles
 //! drag-to-dock interaction.
 
+use crate::dock::floating::FloatingPanelWindow;
 use crate::dock::layout::interim_id;
 use crate::dock::panel::PanelEvent;
 use crate::dock::split_handle::{SplitHandle, SplitHandleDrag, SplitHandleEvent};
@@ -12,11 +13,13 @@ use crate::dock::{
 use crate::{
 	App, AppContext, Axis, Bounds, Context, Div, DragMoveEvent, ElementId, Entity, EventEmitter,
 	FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Pixels, Point, Render,
-	SharedString, Stateful, Styled, Subscription, Window, deferred, div, hsla, px, relative, size,
+	SharedString, Stateful, Styled, Subscription, Window, WindowBounds, WindowOptions, deferred,
+	div, hsla, px, relative, size,
 };
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Events emitted by a [`DockArea`].
 ///
@@ -69,6 +72,17 @@ struct DockDragState {
 	hovered_bounds: Option<Bounds<Pixels>>,
 }
 
+/// One tear-off floating window, tracked so the dock can close it
+/// programmatically (e.g. from the 窗口 menu) and so its close hook knows
+/// whether to re-dock the panel.
+struct FloatingWindowState {
+	/// The window hosting the floated panel.
+	window: crate::WindowHandle<FloatingPanelWindow>,
+	/// Set when the shell asks to close the window *without* re-docking; the
+	/// window's close hook checks it before re-inserting the panel.
+	suppress_redock: Arc<AtomicBool>,
+}
+
 /// A dockable workspace: renders a [`DockLayout`] tree of panels and manages
 /// docking interactions.
 ///
@@ -105,6 +119,15 @@ pub struct DockArea {
 	focus_handle: FocusHandle,
 	focused_panel: Option<PanelId>,
 	drag: Option<DockDragState>,
+	/// Tear-off windows (panel id → window), opened by
+	/// [`float_panel`](DockArea::float_panel) and pruned when the panel
+	/// re-docks or is closed for good.
+	floating: HashMap<PanelId, FloatingWindowState>,
+	/// Each panel's last known dock position, recorded on every layout change
+	/// and before each removal so a closed/tear-off panel can be re-opened
+	/// nearby (see [`last_target`](DockArea::last_target)). `None` means the
+	/// panel was the root.
+	last_targets: HashMap<PanelId, Option<DropTarget>>,
 	/// One tab-strip entity per `Tabs` node, keyed by the node's current
 	/// path. Re-created when the tree changes shape and pruned each render.
 	/// The subscription keeps the strip's events routed back to this view.
@@ -130,6 +153,8 @@ impl DockArea {
 			focus_handle: cx.focus_handle(),
 			focused_panel: None,
 			drag: None,
+			floating: HashMap::new(),
+			last_targets: HashMap::new(),
 			tab_bars: HashMap::new(),
 			split_handles: HashMap::new(),
 		}
@@ -186,6 +211,9 @@ impl DockArea {
 	/// which honors [`DockPanel::should_close`](crate::dock::DockPanel::should_close).
 	pub fn remove_panel(&mut self, id: PanelId, cx: &mut Context<Self>) -> Option<PanelHandle> {
 		let mut handle = self.panels.remove(&id)?;
+		// Remember where the panel sat so a reopen (窗口 menu, tear-off
+		// re-dock) can restore it nearby.
+		self.last_targets.insert(id, self.target_of(id));
 		// Dropping the subscription unsubscribes from the panel's events.
 		handle.set_subscription(None);
 		self.layout.remove_panel(id);
@@ -348,23 +376,215 @@ impl DockArea {
 
 	/// Undocks a panel into its own floating window.
 	///
-	/// **Deferred**: floating panels depend on unverified multi-window
-	/// capabilities; see the [`floating`](crate::dock::FloatingPanelWindow)
-	/// docs. When implemented, this removes the panel from the layout (like
-	/// [`remove_panel`](DockArea::remove_panel) but without emitting
-	/// [`DockEvent::PanelRemoved`]) and opens a
-	/// [`FloatingPanelWindow`](crate::dock::FloatingPanelWindow) hosting it;
-	/// dropping the window back over a dock area re-docks the panel. Until
-	/// then, always returns `false`.
+	/// Removes the panel from the layout (through the same
+	/// [`remove_panel`](DockArea::remove_panel) flow the tab close button uses,
+	/// so the position is recorded for a later re-dock) and opens a
+	/// [`FloatingPanelWindow`](crate::dock::FloatingPanelWindow) hosting it.
+	/// The window's close hook reclaims the [`PanelHandle`] out of the closing
+	/// window and re-docks it at the panel's original position; closing the
+	/// window for good (e.g. via the 窗口 menu, see
+	/// [`close_floating`](DockArea::close_floating)) skips the re-dock.
 	///
-	/// Returns `true` if the panel was floated.
-	pub fn float_panel(
-		&mut self,
-		_id: PanelId,
-		_window: &mut Window,
-		_cx: &mut Context<Self>,
-	) -> bool {
-		false
+	/// Returns `false` if the panel is not docked, or already floating.
+	///
+	/// The window is opened from a deferred context by the caller paths
+	/// ([`finish_drag`](DockArea::finish_drag) / the render-time stale-drag
+	/// cleanup) because opening a window from inside a mouse-event dispatch
+	/// can re-enter the app update.
+	pub fn float_panel(&mut self, id: PanelId, cx: &mut Context<Self>) -> bool {
+		if self.floating.contains_key(&id) || !self.panels.contains_key(&id) {
+			return false;
+		}
+		let Some(handle) = self.remove_panel(id, cx) else {
+			return false;
+		};
+		let title = handle.title().clone();
+		let suppress = Arc::new(AtomicBool::new(false));
+		let suppress_close = suppress.clone();
+		let dock = cx.weak_entity();
+		let floating = cx.new(|cx| FloatingPanelWindow::new(handle, None, cx));
+		let root = floating.clone();
+		let close_root = floating.clone();
+		let bounds = Bounds::centered(None, size(px(640.0), px(480.0)), cx);
+		let window = cx.open_window(
+			WindowOptions {
+				window_bounds: Some(WindowBounds::Windowed(bounds)),
+				titlebar: Some(crate::TitlebarOptions {
+					title: Some(title.clone()),
+					appears_transparent: false,
+					traffic_light_position: None,
+				}),
+				..Default::default()
+			},
+			move |window, app| {
+				// Re-dock on close: while the window is still alive, lift the
+				// panel out of its root view and hand it back to the dock.
+				window.on_window_should_close(app, move |_window, app| {
+					if suppress_close.load(Ordering::SeqCst) {
+						// Explicit close (窗口 menu): the panel stays closed.
+						return true;
+					}
+					let panel = close_root.update(app, |floating, _| floating.take_panel());
+					let Some(panel) = panel else {
+						return true;
+					};
+					if let Some(dock) = dock.upgrade() {
+						let _ = dock.update(app, |dock, cx| dock.redock(panel, cx));
+					}
+					true
+				});
+				root
+			},
+		);
+		let Ok(window) = window else {
+			// Could not open the window; put the panel straight back so it is
+			// never lost.
+			let handle = floating.update(cx, |floating, _| floating.take_panel());
+			if let Some(handle) = handle {
+				self.redock(handle, cx);
+			}
+			return false;
+		};
+		self.floating.insert(
+			id,
+			FloatingWindowState {
+				window,
+				suppress_redock: suppress,
+			},
+		);
+		true
+	}
+
+	/// Closes a floating window *without* re-docking the panel (the 窗口 menu
+	/// uses this to fully close a torn-off panel). No-op if the panel is not
+	/// floating.
+	pub fn close_floating(&mut self, id: PanelId, cx: &mut Context<Self>) {
+		let Some(state) = self.floating.remove(&id) else {
+			return;
+		};
+		state.suppress_redock.store(true, Ordering::SeqCst);
+		let _ = state.window.update(cx, |_, window, _| window.remove_window());
+	}
+
+	/// Re-docks a panel returned by a closing floating window, at the position
+	/// it had before it was floated.
+	fn redock(&mut self, panel: PanelHandle, cx: &mut Context<Self>) {
+		let id = panel.panel_id();
+		self.floating.remove(&id);
+		let target = self.fallback_target(self.last_target(id));
+		let _ = self.add_panel(panel, target, cx);
+	}
+
+	/// Returns the last recorded dock position of `panel` (where it sat before
+	/// its most recent removal, refreshed on every layout change), or `None`
+	/// if it was the root / has never been docked.
+	pub fn last_target(&self, id: PanelId) -> Option<DropTarget> {
+		self.last_targets.get(&id).copied().flatten()
+	}
+
+	/// Whether `panel` is currently docked in the layout.
+	pub fn is_docked(&self, id: PanelId) -> bool {
+		self.layout.contains(id)
+	}
+
+	/// Whether `panel` is currently shown in a floating (tear-off) window.
+	pub fn is_floating(&self, id: PanelId) -> bool {
+		self.floating.contains_key(&id)
+	}
+
+	/// Whether `panel` is currently visible anywhere: docked or floating.
+	pub fn is_panel_visible(&self, id: PanelId) -> bool {
+		self.is_docked(id) || self.is_floating(id)
+	}
+
+	/// Resolves `target` to a usable drop target for re-inserting a panel: if
+	/// the anchor panel is no longer in the layout, falls back to merging into
+	/// the first panel that is; `None` (the root) is kept for an empty layout.
+	pub fn fallback_target(&self, target: Option<DropTarget>) -> Option<DropTarget> {
+		match target {
+			Some(t) if t.panel.map_or(true, |anchor| self.layout.contains(anchor)) => target,
+			Some(_) => self.layout.panels().first().map(|&anchor| DropTarget {
+				panel: Some(anchor),
+				zone: DropZone::Center,
+			}),
+			None => None,
+		}
+	}
+
+	/// Returns a drop target that would re-insert `panel` at roughly its
+	/// current position in the layout (its tab group, or beside its split
+	/// neighbor), so a closed or floated panel can be re-opened nearby.
+	/// `None` when the panel is the root.
+	pub fn target_of(&self, panel: PanelId) -> Option<DropTarget> {
+		let root = self.layout.root()?;
+		Self::target_of_in(root, panel, None)
+	}
+
+	/// The first panel id in the subtree rooted at `node`, depth-first.
+	fn first_panel(node: &DockNode) -> Option<PanelId> {
+		match node {
+			DockNode::Panel(id) => Some(*id),
+			DockNode::Tabs { panels, .. } => panels.first().copied(),
+			DockNode::Split { children, .. } => children.iter().find_map(Self::first_panel),
+		}
+	}
+
+	/// Recursive half of [`target_of`](DockArea::target_of); `parent_split`
+	/// is the split node the current node is a child of, with its index.
+	fn target_of_in(
+		node: &DockNode,
+		panel: PanelId,
+		parent_split: Option<(&DockNode, usize)>,
+	) -> Option<DropTarget> {
+		match node {
+			DockNode::Panel(id) if *id == panel => {
+				let (split, index) = parent_split?;
+				let DockNode::Split { children, .. } = split else {
+					unreachable!("a Panel leaf's parent is a Split (or the root)")
+				};
+				// Re-insert beside the nearest sibling, using the zone that
+				// puts the panel on its original side of the neighbor.
+				if let Some(sibling) = children.get(index + 1) {
+					Self::first_panel(sibling).map(|anchor| DropTarget {
+						panel: Some(anchor),
+						zone: DropZone::Left,
+					})
+				} else if index > 0 {
+					children.get(index - 1).and_then(Self::first_panel).map(|anchor| {
+						DropTarget {
+							panel: Some(anchor),
+							zone: DropZone::Right,
+						}
+					})
+				} else {
+					None
+				}
+			}
+			DockNode::Panel(_) => None,
+			DockNode::Tabs { panels, .. } => {
+				if panels.contains(&panel) {
+					let anchor = panels
+						.iter()
+						.find(|&&other| other != panel)
+						.copied()
+						.or_else(|| panels.first().copied())?;
+					Some(DropTarget {
+						panel: Some(anchor),
+						zone: DropZone::Center,
+					})
+				} else {
+					None
+				}
+			}
+			DockNode::Split { children, .. } => {
+				for (index, child) in children.iter().enumerate() {
+					if let Some(target) = Self::target_of_in(child, panel, Some((node, index))) {
+						return Some(target);
+					}
+				}
+				None
+			}
+		}
 	}
 
 	/// Hit-tests a cursor position against the five drop zones of a target.
@@ -555,8 +775,13 @@ impl DockArea {
 		}
 	}
 
-	/// Emits [`DockEvent::LayoutChanged`] and repaints.
+	/// Emits [`DockEvent::LayoutChanged`] and repaints. Also refreshes each
+	/// panel's recorded dock position ([`last_target`](DockArea::last_target))
+	/// so a subsequent close can restore it.
 	fn emit_layout_changed(&mut self, cx: &mut Context<Self>) {
+		for id in self.layout.panels() {
+			self.last_targets.insert(id, self.target_of(id));
+		}
 		cx.emit(DockEvent::LayoutChanged);
 		cx.notify();
 	}
@@ -975,10 +1200,23 @@ impl DockArea {
 
 impl Render for DockArea {
 	fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-		// A drag that ended without a drop (released outside the dock area)
-		// leaves transient drag state behind; clear it on the next render.
+		// A drag that ended without a drop — released outside the dock area
+		// (or the window) so no `on_drop` ran — leaves transient drag state
+		// behind. That release is the tear-off gesture: float the panel into
+		// its own window. The float is deferred out of the render pass, which
+		// must stay side-effect free.
 		if self.drag.is_some() && !cx.has_active_drag() {
-			self.drag = None;
+			if let Some(drag) = self.drag.take() {
+				let panel = drag.panel;
+				let this = cx.weak_entity();
+				cx.defer(move |app| {
+					if let Some(this) = this.upgrade() {
+						this.update(app, |this, cx| {
+							this.float_panel(panel, cx);
+						});
+					}
+				});
+			}
 		}
 
 		let mut root = div()
@@ -1473,5 +1711,127 @@ mod tests {
 		);
 
 		assert_eq!(dock_layout(&view, cx), "[1,2]");
+	}
+
+	/// The tab close button renders with a real hitbox at the tab's right edge
+	/// — not tucked directly after the title — so the ✕ affordance is visible
+	/// and can't be mis-clicked.
+	#[test]
+	fn close_button_is_visible_and_right_aligned() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One"), (2, "Two")], &[]);
+		let any_window = *window.deref();
+		let _view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app).into_mut();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+
+		let tab = cx.debug_bounds("dock-tab-1").expect("tab 1 rendered");
+		let close = cx
+			.debug_bounds("dock-tab-close-1")
+			.expect("close button rendered for a closable tab");
+		assert!(
+			close.size.width > px(0.0) && close.size.height > px(0.0),
+			"the close button has a usable hitbox: {close:?}"
+		);
+		// Right-aligned: the button's right edge sits inside the tab's own
+		// padding (the tab is `px_2` = 8px), not after a short title. With a
+		// short title and the old inline layout the button would float well
+		// left of the tab's right edge.
+		let gap = (tab.right() - close.right()).0;
+		assert!(
+			gap >= 0.0 && gap < 14.0,
+			"close button pins to the tab's right edge (gap {gap}px; tab {tab:?}, close {close:?})"
+		);
+		assert!(
+			close.left() >= tab.left() && close.right() <= tab.right() + px(1.0),
+			"close button stays within the tab horizontally"
+		);
+	}
+
+	/// Dragging a tab out of the dock and releasing over no drop target (here,
+	/// beyond the window) tears the panel off into its own floating window.
+	/// Closing that window re-docks the panel at its original position.
+	#[test]
+	fn dragging_a_tab_outside_the_dock_floats_it_and_closing_re_docks() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One"), (2, "Two")], &[]);
+		let any_window = *window.deref();
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app);
+
+		assert_eq!(dock_layout(&view, &mut cx), "[1,2]");
+
+		// Drag tab 1 to (900, 300) — past the 800x600 window — and release.
+		// No drop target is hit, so the dock treats the release as a tear-off.
+		drag_tab(
+			&mut cx,
+			point(px(24.), px(13.)),
+			point(px(60.), px(43.)),
+			point(px(900.), px(300.)),
+		);
+		cx.run_until_parked();
+		// The next render observes the ended drag and floats the panel.
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+		cx.run_until_parked();
+
+		// The panel left the dock; a second window now hosts it.
+		assert_eq!(dock_layout(&view, &mut cx), "[2]", "panel 1 was floated");
+		let floating = test_app
+			.windows()
+			.iter()
+			.find_map(|handle| handle.downcast::<FloatingPanelWindow>())
+			.expect("a floating window hosts the panel");
+		let mut float_cx = VisualTestContext::from_window(*floating.deref(), &test_app);
+
+		// Closing the floating window returns the panel to its original group.
+		assert!(
+			float_cx.simulate_close(),
+			"closing the floating window is allowed"
+		);
+		assert_eq!(
+			dock_layout(&view, &mut cx),
+			"[2,1]",
+			"the panel re-docked beside its original group"
+		);
+	}
+
+	/// Closing a floating window for good (the 窗口 menu's toggle on a
+	/// torn-off panel, see [`DockArea::close_floating`]) removes the panel
+	/// without re-docking it.
+	#[test]
+	fn close_floating_removes_the_panel_without_redocking() {
+		let mut test_app = TestAppContext::single();
+		let window = open_dock_window(&mut test_app, &[(1, "One"), (2, "Two")], &[]);
+		let any_window = *window.deref();
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let mut cx = VisualTestContext::from_window(any_window, &test_app);
+
+		// Tear panel 1 off first.
+		drag_tab(
+			&mut cx,
+			point(px(24.), px(13.)),
+			point(px(60.), px(43.)),
+			point(px(900.), px(300.)),
+		);
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+		cx.run_until_parked();
+		assert_eq!(dock_layout(&view, &mut cx), "[2]");
+
+		// Explicitly close the floating window: the panel stays gone.
+		let dock = cx.read(|app| view.read(app).dock.clone());
+		dock.update(&mut cx, |dock, cx| dock.close_floating(PanelId::new(1), cx));
+		cx.run_until_parked();
+		assert_eq!(
+			dock_layout(&view, &mut cx),
+			"[2]",
+			"an explicit close does not re-dock the panel"
+		);
 	}
 }

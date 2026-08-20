@@ -468,12 +468,21 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 						.child(if let Some(thumbnail) = entry.thumbnail.clone() {
 							// A filesystem path: load through the path resource so
 							// generated thumbnails resolve without an asset source.
-							img(PathBuf::from(thumbnail.as_ref()))
+							// The wrapper div carries the test selector (the `img`
+							// element itself has no debug bounds).
+							div()
+								.debug_selector(move || {
+									format!("gpui-widgets-explorer-thumb-{entry_id}").into()
+								})
 								.w(px(72.0))
 								.h(px(48.0))
+								.child(img(PathBuf::from(thumbnail.as_ref())).w(px(72.0)).h(px(48.0)))
 								.into_any_element()
 						} else {
 							div()
+								.debug_selector(move || {
+									format!("gpui-widgets-explorer-thumb-placeholder-{entry_id}").into()
+								})
 								.w(px(72.0))
 								.h(px(48.0))
 								.rounded_md()
@@ -781,6 +790,69 @@ mod tests {
 		assert!(
 			cx.debug_bounds("gpui-widgets-explorer-icon-1").is_none(),
 			"the folder root itself has no icon"
+		);
+	}
+
+	/// A data source mixing a thumbnailed footage entry with a plain one (the
+	/// real engine attaches thumbnail paths via
+	/// [`ProjectEntry::with_thumbnail`]).
+	struct ThumbnailData;
+	impl ProjectDataSource for ThumbnailData {
+		fn roots(&self) -> Vec<ProjectEntry> {
+			vec![
+				ProjectEntry::new(2, "clip.mov", false)
+					.with_thumbnail("/tmp/oak-thumbnails/thumb2.png"),
+				ProjectEntry::new(3, "notes.md", false),
+			]
+		}
+		fn children(&self, _parent_id: u64) -> Vec<ProjectEntry> {
+			Vec::new()
+		}
+	}
+
+	/// Root view hosting the thumbnailed explorer (no event recording needed
+	/// for the structure assertion).
+	struct ThumbnailHost {
+		explorer: Entity<ProjectExplorer<ThumbnailData>>,
+	}
+	impl Render for ThumbnailHost {
+		fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+			div().size_full().child(self.explorer.clone())
+		}
+	}
+
+	/// The icon grid renders a real `img` element for entries carrying a
+	/// thumbnail asset path and the letter placeholder for entries without
+	/// one — the widget half of the footage-thumbnail chain.
+	#[gpui::test]
+	async fn icon_view_renders_thumbnail_img_or_placeholder(cx: &mut TestAppContext) {
+		cx.update(|cx| cx.init_colors());
+		let window = cx.open_window(size(px(300.0), px(240.0)), |window, cx| {
+			let data = cx.new(|_| ThumbnailData);
+			let explorer = cx.new(|cx| ProjectExplorer::new(1, data, window, cx));
+			ThumbnailHost { explorer }
+		});
+		cx.run_until_parked();
+		let _host = window.root(cx).unwrap();
+		let mut cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+
+		// Switch to the icon grid.
+		let toggle = cx
+			.debug_bounds("gpui-widgets-explorer-icons")
+			.expect("icons toggle rendered");
+		cx.simulate_click(toggle.center(), Modifiers::none());
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+
+		assert!(
+			cx.debug_bounds("gpui-widgets-explorer-thumb-2").is_some(),
+			"a thumbnailed entry must render an img element"
+		);
+		assert!(
+			cx.debug_bounds("gpui-widgets-explorer-thumb-placeholder-3").is_some(),
+			"an entry without a thumbnail must render the letter placeholder"
 		);
 	}
 }
