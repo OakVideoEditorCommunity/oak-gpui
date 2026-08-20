@@ -116,6 +116,12 @@ impl CurveEditor {
 		&self.points
 	}
 
+	/// Whether a point/handle drag is in progress (hosts must not push a
+	/// `set_points` re-sync mid-drag — it would steal the gesture).
+	pub fn is_dragging(&self) -> bool {
+		self.pending_drag.is_some()
+	}
+
 	/// Apply the host's reconciled curve and repaint.
 	pub fn set_points(&mut self, points: Vec<CurvePoint>, cx: &mut Context<Self>) {
 		self.points = points;
