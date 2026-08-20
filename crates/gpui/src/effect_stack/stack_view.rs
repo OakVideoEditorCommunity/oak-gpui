@@ -67,6 +67,14 @@ pub enum EffectStackEvent {
 		/// The desired new expansion state.
 		expanded: bool,
 	},
+	/// The user clicked a card header to select it (the same gesture that
+	/// toggles expansion). Emitted alongside
+	/// [`ExpansionToggled`](Self::ExpansionToggled) so hosts can sync the
+	/// effect selection with the node graph (highlighting the effect's node).
+	CardSelected {
+		/// The clicked effect.
+		effect: EffectId,
+	},
 	/// The user clicked the remove button on a removable card.
 	RemoveRequested(EffectId),
 	/// The user invoked an "add effect" affordance at a stack position.
@@ -274,7 +282,9 @@ impl<D: EffectStackDataSource> EffectStackView<D> {
 	}
 
 	/// Toggles a card's expansion by emitting
-	/// [`EffectStackEvent::ExpansionToggled`].
+	/// [`EffectStackEvent::ExpansionToggled`], and reports the card click as
+	/// [`EffectStackEvent::CardSelected`] so hosts can sync the node-graph
+	/// selection with the stack.
 	fn toggle_expanded(&mut self, id: EffectId, cx: &mut Context<Self>) {
 		self.drag_state = DragState::default();
 		let expanded = self
@@ -289,6 +299,7 @@ impl<D: EffectStackDataSource> EffectStackView<D> {
 			effect: id,
 			expanded,
 		});
+		cx.emit(EffectStackEvent::CardSelected { effect: id });
 		cx.notify();
 	}
 
@@ -360,9 +371,9 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 			self.drag_state = DragState::default();
 		}
 
-		let (label, effects) = {
+		let (label, effects, selected_effect) = {
 			let data = self.data.read(cx);
-			(data.target_label(), data.effects())
+			(data.target_label(), data.effects(), data.selected_effect())
 		};
 		let insertion_index = self.drag_state.insertion_index;
 		let dragged_id = self.drag_state.dragged;
@@ -532,7 +543,9 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 				.w_full()
 				.rounded_md()
 				.border_1()
-				.border_color(if fixed {
+				.border_color(if selected_effect == Some(id) {
+					colors.selected
+				} else if fixed {
 					colors.border
 				} else {
 					colors.separator

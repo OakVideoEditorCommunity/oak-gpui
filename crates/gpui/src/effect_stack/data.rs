@@ -162,6 +162,15 @@ pub trait EffectStackDataSource: 'static {
 	/// state instead of cards and suppresses all card interactions.
 	fn target_label(&self) -> Option<SharedString>;
 
+	/// The card the stack should highlight as selected — the effect whose
+	/// node is selected in the node graph, when the two views are linked.
+	/// `None` means no card is highlighted. Defaults to `None`.
+	///
+	/// This is a read-only selection mirror; the view never mutates it.
+	fn selected_effect(&self) -> Option<EffectId> {
+		None
+	}
+
 	/// Whether dropping the given effect at `new_index` (an index into the
 	/// list returned by [`effects`](EffectStackDataSource::effects)) would
 	/// be a valid reorder.

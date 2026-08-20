@@ -198,6 +198,7 @@ impl StackDemoRoot {
 						| EffectStackEvent::RemoveRequested(_)
 						| EffectStackEvent::AddRequested { .. }
 						| EffectStackEvent::ContextMenuRequested { .. }
+						| EffectStackEvent::CardSelected { .. }
 						| EffectStackEvent::ParameterChanged { .. } => {
 							todo!("apply {event:?} to the mock model (or engine, in a real app)")
 						}

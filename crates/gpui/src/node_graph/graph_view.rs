@@ -318,6 +318,16 @@ impl<D: NodeGraphDataSource + 'static> NodeGraphView<D> {
 		&mut self.state
 	}
 
+	/// Programmatically replaces the selection (e.g. to sync the graph with
+	/// a timeline selection or an inspector card click). Emits
+	/// [`NodeGraphEvent::SelectionChanged`] when the set changed, so hosts
+	/// keep their engine-side selection mirror consistent. Callers should
+	/// not call `cx.notify()` on the view themselves — this method does.
+	pub fn set_selection(&mut self, nodes: BTreeSet<NodeId>, cx: &mut Context<Self>) {
+		self.set_selection_and_emit(nodes, cx);
+		cx.notify();
+	}
+
 	/// Returns the data-source entity this view renders.
 	pub fn data(&self) -> &Entity<D> {
 		&self.data
