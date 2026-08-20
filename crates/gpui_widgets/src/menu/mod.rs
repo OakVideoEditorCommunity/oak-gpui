@@ -12,9 +12,9 @@
 pub mod model;
 
 use gpui::{
-	Anchor, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, Focusable,
-	KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render, SharedString,
-	Window, anchored, colors::DefaultColors, deferred, div, point, prelude::*, px,
+	Anchor, AnchoredPositionMode, App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle,
+	Focusable, KeyDownEvent, MouseButton, MouseMoveEvent, MouseUpEvent, Pixels, Point, Render,
+	SharedString, Window, anchored, colors::DefaultColors, deferred, div, prelude::*, px,
 };
 
 pub use model::{Menu, MenuItem};
@@ -92,7 +92,6 @@ pub struct MenuBar {
 	entries: Vec<MenuBarEntry>,
 	focus_handle: FocusHandle,
 	open: Option<usize>,
-	popup_position: Point<Pixels>,
 	was_open_at_down: bool,
 	hovered: Option<usize>,
 	submenu: Option<usize>,
@@ -111,7 +110,6 @@ impl MenuBar {
 			entries,
 			focus_handle: cx.focus_handle(),
 			open: None,
-			popup_position: Point::default(),
 			was_open_at_down: false,
 			hovered: None,
 			submenu: None,
@@ -138,10 +136,9 @@ impl MenuBar {
 		found
 	}
 
-	fn open_menu(&mut self, index: usize, position: Point<Pixels>, cx: &mut Context<Self>) {
+	fn open_menu(&mut self, index: usize, cx: &mut Context<Self>) {
 		if self.open != Some(index) {
 			self.open = Some(index);
-			self.popup_position = position;
 			self.hovered = None;
 			self.submenu = None;
 			cx.emit(MenuBarEvent::MenuOpened {
@@ -228,152 +225,162 @@ impl Render for MenuBar {
 			.gap_1()
 			.bg(colors.container);
 
-		for (index, entry) in self.entries.clone().into_iter().enumerate() {
-			let is_open = self.open == Some(index);
-			bar = bar.child(
-				div()
-					.id(ElementId::named_usize(
-						format!("gpui-widgets-menu-title-{}", self.control),
-						index,
-					))
-					.debug_selector(move || format!("menu-title-{index}").into())
-					.px_2()
-					.py_0p5()
-					.rounded_md()
-					.bg(if is_open {
-						colors.selected
-					} else {
-						transparent()
-					})
-					.text_color(if is_open {
-						colors.selected_text
-					} else {
-						colors.text
-					})
-					.text_xs()
-					.cursor_pointer()
-					.on_mouse_down(
-						MouseButton::Left,
-						cx.listener(|this, _event: &gpui::MouseDownEvent, _window, _cx| {
-							this.was_open_at_down = this.open.is_some();
-						}),
-					)
-					.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
-						// Menu scrubbing: with a menu open, moving over another
-						// title switches the open menu to it (re-anchoring the
-						// popup under the pointer). Nothing happens while no
-						// menu is open, so the titles only open on click.
-						if this.open.is_some() {
-							this.open_menu(index, event.position, cx);
-						}
-					}))
-					.on_click(cx.listener(move |this, event: &ClickEvent, _window, cx| {
-						if this.was_open_at_down {
-							this.close_menu(cx);
-						} else {
-							this.open_menu(index, event.position(), cx);
-						}
-						cx.stop_propagation();
-					}))
-					.child(entry.title),
-			);
-		}
+		let open = self.open;
 
-		// The open menu popup.
-		if let Some(open_index) = self.open {
-			let entry = self.entries[open_index].clone();
-			let hovered = self.hovered;
-			let menu_popup = menu_popup_element(
-				self.control,
-				&entry.menu,
-				hovered,
-				"menu-popup",
-				&colors,
-				cx.listener(|this, item: &MenuClicked, _window, cx| {
-					this.trigger(item.id, cx);
-				}),
-				cx.listener(|this, item: &MenuHovered, _window, cx| {
-					// Mouse hover drives both the row highlight and the
-					// submenu: remember the hovered row so the render pass
-					// can open the nested menu next to it.
-					this.hovered = Some(item.index);
-					this.submenu = if item.submenu { Some(item.index) } else { None };
-					cx.notify();
-				}),
-			)
-			.track_focus(&self.focus_handle)
-			.on_mouse_up_out(
-				MouseButton::Left,
-				cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-					this.close_menu(cx);
-				}),
-			)
-			.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-				match event.keystroke.key.as_str() {
-					"up" => this.navigate(-1, cx),
-					"down" => this.navigate(1, cx),
-					"enter" | "space" => {
-						if let Some(hovered) = this.hovered {
-							if let Some(item) = entry_at(this, hovered) {
-								if item.enabled && item.submenu.is_none() {
-									this.trigger(item.id, cx);
+		for (index, entry) in self.entries.clone().into_iter().enumerate() {
+			let is_open = open == Some(index);
+			let title = div()
+				.id(ElementId::named_usize(
+					format!("gpui-widgets-menu-title-{}", self.control),
+					index,
+				))
+				.debug_selector(move || format!("menu-title-{index}").into())
+				.px_2()
+				.py_0p5()
+				.rounded_md()
+				.bg(if is_open {
+					colors.selected
+				} else {
+					transparent()
+				})
+				.text_color(if is_open {
+					colors.selected_text
+				} else {
+					colors.text
+				})
+				.text_xs()
+				.cursor_pointer()
+				.on_mouse_down(
+					MouseButton::Left,
+					cx.listener(|this, _event: &gpui::MouseDownEvent, _window, _cx| {
+						this.was_open_at_down = this.open.is_some();
+					}),
+				)
+				.on_mouse_move(cx.listener(move |this, _event: &MouseMoveEvent, _window, cx| {
+					// Menu scrubbing: with a menu open, moving over another
+					// title switches the open menu to it (re-anchoring the
+					// popup under the pointer). Nothing happens while no
+					// menu is open, so the titles only open on click.
+					if this.open.is_some() {
+						this.open_menu(index, cx);
+					}
+				}))
+				.on_click(cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+					if this.was_open_at_down {
+						this.close_menu(cx);
+					} else {
+						this.open_menu(index, cx);
+					}
+					cx.stop_propagation();
+				}))
+				.child(entry.title);
+
+			// Each title lives in a `relative` wrapper. The open menu drops
+			// from the title's bottom-left corner: the popup is laid out here,
+			// inside the wrapper, and anchored in `Local` mode so its own
+			// layout origin (the title's bottom-left) is the anchor — no matter
+			// where the pointer was when the title was clicked. `deferred`
+			// lifts it above the rest of the window.
+			let mut wrapper = div().relative().child(title);
+
+			if is_open {
+				let hovered = self.hovered;
+				let menu = entry.menu.clone();
+				let mut popup = menu_popup_element(
+					self.control,
+					&menu,
+					hovered,
+					"menu-popup",
+					&colors,
+					cx.listener(|this, item: &MenuClicked, _window, cx| {
+						this.trigger(item.id, cx);
+					}),
+					cx.listener(|this, item: &MenuHovered, _window, cx| {
+						// Mouse hover drives both the row highlight and the
+						// submenu: remember the hovered row so the render pass
+						// can open the nested menu next to it.
+						this.hovered = Some(item.index);
+						this.submenu = if item.submenu { Some(item.index) } else { None };
+						cx.notify();
+					}),
+				)
+				.track_focus(&self.focus_handle)
+				.on_mouse_up_out(
+					MouseButton::Left,
+					cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+						this.close_menu(cx);
+					}),
+				)
+				.on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
+					match event.keystroke.key.as_str() {
+						"up" => this.navigate(-1, cx),
+						"down" => this.navigate(1, cx),
+						"enter" | "space" => {
+							if let Some(hovered) = this.hovered {
+								if let Some(item) = entry_at(this, hovered) {
+									if item.enabled && item.submenu.is_none() {
+										this.trigger(item.id, cx);
+									}
 								}
 							}
 						}
+						"escape" | "left" => this.close_menu(cx),
+						_ => {}
 					}
-					"escape" | "left" => this.close_menu(cx),
-					_ => {}
+				}));
+
+				// A hovered item's submenu, as an absolutely positioned child of
+				// the popup so it follows the popup's FINAL bounds (after any
+				// window-edge snapping) and can never detach from its parent.
+				if let Some(hovered) = hovered
+					&& let Some(item) = menu.items.get(hovered)
+					&& let Some(submenu) = item.submenu.clone()
+				{
+					let sub_popup = menu_popup_element(
+						self.control + 1000,
+						&submenu,
+						None,
+						"menu-submenu-popup",
+						&colors,
+						cx.listener(|this, clicked: &MenuClicked, _window, cx| {
+							this.trigger(clicked.id, cx);
+						}),
+						cx.listener(|_this, _item: &MenuHovered, _window, _cx| {}),
+					);
+					let width = menu_width(&menu) + px(2.0);
+					let top = submenu_top(&menu, hovered);
+					popup = popup.child(
+						div()
+							.absolute()
+							.left(width)
+							.top(top)
+							.child(sub_popup)
+							.into_any_element(),
+					);
 				}
-			}));
 
-			bar = bar.child(
-				deferred(
-					anchored()
-						.position(self.popup_position)
-						.anchor(Anchor::TopLeft)
-						.offset(point(px(0.0), px(ROW_HEIGHT)))
-						.snap_to_window_with_margin(px(8.0))
-						.child(menu_popup),
-				)
-				.with_priority(1),
-			);
+				wrapper = wrapper.child(
+					div()
+						.absolute()
+						.left_0()
+						.top_full()
+						.child(
+							deferred(
+								anchored()
+									.position_mode(AnchoredPositionMode::Local)
+									.anchor(Anchor::TopLeft)
+									.snap_to_window_with_margin(px(8.0))
+									.child(popup),
+							)
+							.with_priority(1),
+						),
+				);
 
-			// A hovered item's submenu, anchored to the right of the popup.
-			if let Some(hovered) = self.hovered
-				&& let Some(item) = self.entries[open_index].menu.items.get(hovered)
-				&& let Some(submenu) = item.submenu.clone()
-			{
-				let sub_hovered = self.submenu.and_then(|_| None);
-				let sub_popup = menu_popup_element(
-					self.control + 1000,
-					&submenu,
-					sub_hovered,
-					"menu-submenu-popup",
-					&colors,
-					cx.listener(|this, clicked: &MenuClicked, _window, cx| {
-						this.trigger(clicked.id, cx);
-					}),
-					cx.listener(|_this, _item: &MenuHovered, _window, _cx| {}),
-				);
-				let width = f32::from(menu_width(&entry.menu));
-				// Align the submenu with the hovered row (one row height per
-				// item) so it opens next to the item, not the first row.
-				let top = ROW_HEIGHT * (hovered as f32 + 1.0);
-				bar = bar.child(
-					deferred(
-						anchored()
-							.position(self.popup_position)
-							.anchor(Anchor::TopLeft)
-							.offset(point(px(width + 2.0), px(top)))
-							.snap_to_window_with_margin(px(8.0))
-							.child(sub_popup),
-					)
-					.with_priority(2),
-				);
+				// Focus the popup so keyboard navigation works.
+				window.focus(&self.focus_handle, cx);
 			}
 
-			// Focus the popup so keyboard navigation works.
-			window.focus(&self.focus_handle, cx);
+			bar = bar.child(wrapper);
 		}
 
 		bar
@@ -573,15 +580,8 @@ impl Render for ContextMenu {
 				);
 				// The parent's row top: the popup's py-1 padding plus every
 				// preceding row (a separator is 1px + my-1 on both sides).
-				let mut top = px(4.0);
-				for item in menu.items.iter().take(hovered) {
-					top += if Menu::is_separator(item) {
-						px(9.0)
-					} else {
-						px(ROW_HEIGHT)
-					};
-				}
 				let width = menu_width(&menu) + px(2.0);
+				let top = submenu_top(&menu, hovered);
 				popup = popup.child(
 					div()
 						.absolute()
@@ -645,7 +645,13 @@ fn menu_popup_element(
 		.py_1()
 		.text_xs()
 		.flex()
-		.flex_col();
+		.flex_col()
+		// The popup occludes everything beneath it (a `BlockMouse` hitbox over
+		// its whole area), so elements of the underlying UI are no longer
+		// hovered — and don't keep their hover highlight — while the pointer is
+		// over the menu. Items inside the popup still receive hover/click
+		// normally because their hitboxes sit in front of this one.
+		.occlude();
 
 	for (index, item) in menu.items.iter().enumerate() {
 		let id = item.id;
@@ -728,6 +734,21 @@ fn menu_popup_element(
 		column = column.child(row);
 	}
 	column
+}
+
+/// The submenu's top offset inside its parent popup: the popup's `py-1`
+/// padding plus every preceding row (a separator is 1px + `my-1` on both
+/// sides), so the submenu opens next to the hovered row, not the first one.
+fn submenu_top(menu: &Menu, hovered: usize) -> Pixels {
+	let mut top = px(4.0);
+	for item in menu.items.iter().take(hovered) {
+		top += if Menu::is_separator(item) {
+			px(9.0)
+		} else {
+			px(ROW_HEIGHT)
+		};
+	}
+	top
 }
 
 /// A menu popup's content-aware width: the longest label (CJK glyphs
@@ -1113,6 +1134,164 @@ mod tests {
 		assert!(
 			cx.debug_bounds("menu-popup").is_none(),
 			"menu closed after triggering"
+		);
+	}
+
+	/// A host for the hover-occlusion test: a menu bar plus a full-width probe
+	/// strip underneath the bar that reports whether it is hovered. The open
+	/// popup drops over the strip, so the strip must stop being hovered while
+	/// the pointer is on the popup.
+	struct HoverHost {
+		menu_bar: Entity<MenuBar>,
+		probe_hovered: bool,
+	}
+	impl Render for HoverHost {
+		fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+			div()
+				.size_full()
+				.child(
+					div()
+						.id("hover-probe")
+						.absolute()
+						.left_0()
+						.top(px(30.0))
+						.w_full()
+						.h(px(90.0))
+						.on_hover(cx.listener(|this, hovered: &bool, _window, _cx| {
+							this.probe_hovered = *hovered;
+						})),
+				)
+				.child(self.menu_bar.clone())
+		}
+	}
+
+	/// The open menu drops from the open title's bottom-left corner: its left
+	/// edge lines up with the title's left edge and its top edge with the
+	/// title's bottom edge, no matter where the pointer was when the title was
+	/// clicked.
+	#[gpui::test]
+	async fn menu_bar_popup_drops_from_the_open_titles_bottom_left(cx: &mut TestAppContext) {
+		let (cx, _host) = make_bar(cx);
+		// Click the right half of the "File" title; the popup must still line up
+		// with the title's left edge, not the click position.
+		cx.simulate_click(point(px(40.0), px(14.0)), Modifiers::none());
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+
+		let popup = cx.debug_bounds("menu-popup").expect("menu popup rendered");
+		let title = cx
+			.debug_bounds("menu-title-0")
+			.expect("menu title rendered");
+		assert!(
+			(f32::from(popup.left()) - f32::from(title.left())).abs() < 1.0,
+			"popup left edge ({:?}) should align with the title's left edge ({:?})",
+			popup.left(),
+			title.left()
+		);
+		assert!(
+			(f32::from(popup.top()) - f32::from(title.bottom())).abs() < 1.0,
+			"popup top ({:?}) should start at the title's bottom edge ({:?})",
+			popup.top(),
+			title.bottom()
+		);
+	}
+
+	/// The context menu's top level opens with its top-left corner exactly at
+	/// the requested window position (the right-click point).
+	#[gpui::test]
+	async fn context_menu_popup_aligns_with_the_click_point(cx: &mut TestAppContext) {
+		cx.update(|cx| cx.init_colors());
+		let window = cx.open_window(size(px(400.0), px(120.0)), |window, cx| {
+			ContextMenu::new(0, window, cx)
+		});
+		cx.run_until_parked();
+		let context_menu = window.root(cx).unwrap();
+		let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+
+		let position = point(px(200.0), px(50.0));
+		let menu = Menu::new(vec![
+			MenuItem::new(1, "Copy"),
+			MenuItem::new(2, "Paste"),
+		]);
+		cx.update(|_window, app| {
+			context_menu.update(app, |menu_view, cx| menu_view.show(position, menu, cx));
+		});
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+
+		let popup = cx
+			.debug_bounds("menu-popup")
+			.expect("context menu popup rendered");
+		assert!(
+			(f32::from(popup.left()) - f32::from(position.x)).abs() < 1.0,
+			"popup left ({:?}) should align with the click point x ({:?})",
+			popup.left(),
+			position.x
+		);
+		assert!(
+			(f32::from(popup.top()) - f32::from(position.y)).abs() < 1.0,
+			"popup top ({:?}) should align with the click point y ({:?})",
+			popup.top(),
+			position.y
+		);
+	}
+
+	/// While a menu popup is open, elements of the underlying UI inside the
+	/// popup's bounds must not be hovered: the popup occludes them. This is the
+	/// structural regression test for the "hover bleed-through" bug where, for
+	/// example, an effect-library list item kept its highlight while the pointer
+	/// was over the open menu.
+	#[gpui::test]
+	async fn open_menu_popup_occludes_hover_below_it(cx: &mut TestAppContext) {
+		cx.update(|cx| cx.init_colors());
+		let window = cx.open_window(size(px(400.0), px(120.0)), |window, cx| {
+			let menu_bar = cx.new(|cx| MenuBar::new(1, demo_entries(), window, cx));
+			HoverHost {
+				menu_bar,
+				probe_hovered: false,
+			}
+		});
+		cx.run_until_parked();
+		let host = window.root(cx).unwrap();
+		let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+
+		// Open the "File" menu (the popup drops over the probe strip).
+		cx.simulate_click(point(px(20.0), px(10.0)), Modifiers::none());
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+		let popup = cx.debug_bounds("menu-popup").expect("menu popup rendered");
+
+		// Over the probe but to the right of the popup: the probe is hovered.
+		cx.simulate_mouse_move(point(px(300.0), px(60.0)), None, Modifiers::none());
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+		assert!(
+			cx.read(|app| host.read(app).probe_hovered),
+			"the probe should be hovered when the pointer is not over the popup"
+		);
+
+		// Over the popup: the popup's hitbox occludes the probe, so the probe
+		// must no longer be hovered (its highlight must be gone).
+		cx.simulate_mouse_move(
+			point(popup.left() + px(40.0), popup.top() + px(20.0)),
+			None,
+			Modifiers::none(),
+		);
+		cx.run_until_parked();
+		cx.update(|window, cx| {
+			window.draw(cx).clear();
+		});
+		assert!(
+			!cx.read(|app| host.read(app).probe_hovered),
+			"the probe must not be hovered while the pointer is over the popup"
 		);
 	}
 }

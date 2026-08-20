@@ -46,6 +46,71 @@ const CLIP_CORNER_RADIUS: Pixels = px(4.0);
 /// zoom level.
 const PX_PER_FRAME_FALLBACK: f32 = 1.0;
 
+/// The luma scale applied to a selected clip's body: darkening one notch
+/// (×0.7) makes the selection read clearly even when the clip color matches
+/// the selection accent (green clips against a green selection outline would
+/// otherwise show no visible change at all).
+const SELECTED_LUMA_SCALE: f32 = 0.7;
+
+/// The clip body fill: the clip color, darkened one luma notch when selected
+/// and dimmed (halved alpha) when the clip is disabled.
+fn clip_body_color(color: Hsla, selected: bool, enabled: bool) -> Hsla {
+	let color = if selected {
+		Hsla {
+			l: color.l * SELECTED_LUMA_SCALE,
+			..color
+		}
+	} else {
+		color
+	};
+	if enabled {
+		color
+	} else {
+		Hsla {
+			a: color.a * 0.5,
+			..color
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The selected-clip body darkens one luma notch (×0.7) while keeping hue
+	/// and saturation; a disabled clip halves the alpha; the two compose.
+	#[test]
+	fn selected_clip_body_darkens_one_luma_notch() {
+		let color = hsla(0.402, 0.385, 0.459, 1.0);
+
+		let plain = clip_body_color(color, false, true);
+		assert_eq!(plain.l, color.l, "an unselected enabled clip keeps its color");
+		assert_eq!(plain.a, color.a);
+
+		let selected = clip_body_color(color, true, true);
+		assert!(
+			(selected.l - color.l * SELECTED_LUMA_SCALE).abs() < 1e-6,
+			"the selected body luma scales by {} (got {})",
+			SELECTED_LUMA_SCALE,
+			selected.l
+		);
+		assert_eq!(selected.h, color.h, "hue is untouched");
+		assert_eq!(selected.s, color.s, "saturation is untouched");
+		assert_eq!(selected.a, color.a, "alpha is untouched");
+
+		let disabled = clip_body_color(color, false, false);
+		assert!(
+			(disabled.a - color.a * 0.5).abs() < 1e-6,
+			"a disabled clip halves its alpha"
+		);
+		assert_eq!(disabled.l, color.l, "disabling alone does not darken");
+
+		let selected_disabled = clip_body_color(color, true, false);
+		assert_eq!(selected_disabled.l, color.l * SELECTED_LUMA_SCALE);
+		assert_eq!(selected_disabled.a, color.a * 0.5);
+	}
+}
+
 /// What the clip content area should show, per track kind and zoom.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClipContent {
@@ -259,17 +324,12 @@ impl RenderOnce for ClipElement {
 						decorator,
 					},
 					|bounds, paint, window, _cx| {
-						// Body quad, dimmed when the clip is disabled.
-						let body_color = if paint.enabled {
-							paint.color
-						} else {
-							Hsla {
-								h: paint.color.h,
-								s: paint.color.s,
-								l: paint.color.l,
-								a: paint.color.a * 0.5,
-							}
-						};
+						// Body quad. A selected clip's body is darkened one
+						// luma notch so the selection reads even when the clip
+						// color matches the selection accent; a disabled clip
+						// is dimmed.
+						let body_color =
+							clip_body_color(paint.color, paint.selected, paint.enabled);
 						window.paint_quad(fill(bounds, body_color).corner_radii(CLIP_CORNER_RADIUS));
 
 						// Transition wedges: triangles tapering into the clip
