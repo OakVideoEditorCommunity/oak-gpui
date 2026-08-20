@@ -14,10 +14,13 @@ pub use transport::*;
 
 use gpui::timeline::{FrameRate, TimeDisplay, format_timecode};
 use gpui::{
-	AnyElement, App, AsyncWindowContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-	Focusable, ObjectFit, Render, RenderImage, SharedString, SurfaceSource, Window,
-	colors::DefaultColors, div, img, prelude::*, px, surface,
+	AnyElement, App, AsyncWindowContext, Bounds, ClickEvent, Context, Entity, EventEmitter,
+	FocusHandle, Focusable, Keystroke, KeyDownEvent, KeyUpEvent, MouseButton, MouseMoveEvent,
+	ObjectFit, Point, Pixels, Render, RenderImage, SharedString, SurfaceSource, Window,
+	canvas, colors::DefaultColors, div, img, prelude::*, px, surface,
 };
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::{icons, tooltip::tooltip_view};
@@ -67,6 +70,41 @@ pub enum ViewerEvent {
 		/// The viewer's stable id.
 		control: usize,
 	},
+	/// A pointer (pen) event inside the picture area, emitted so the host
+	/// can forward it to an OFX interact. `position` is local to the
+	/// picture area (top-left origin, logical pixels).
+	InteractPointer {
+		/// Whether this is a move, a press or a release.
+		kind: InteractPointerKind,
+		/// Position in the picture area's local pixels (top-left origin).
+		position: Point<f32>,
+		/// The button involved in a press/release, if any.
+		button: Option<MouseButton>,
+		/// Whether a pointer button is held at this event (the pen-down
+		/// state for a move).
+		pressed: bool,
+	},
+	/// A key press/release while the picture area has keyboard focus,
+	/// emitted for OFX interact forwarding. Keys consumed by a global
+	/// keybinding never reach this event (gpui dispatches bindings before
+	/// the focus-path key handlers).
+	InteractKey {
+		/// true = press, false = release.
+		down: bool,
+		/// The keystroke (modifiers + key name).
+		keystroke: Keystroke,
+	},
+}
+
+/// The kind of a pointer event inside the picture area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InteractPointerKind {
+	/// A mouse move (possibly with a button held).
+	Move,
+	/// A mouse button press.
+	Down,
+	/// A mouse button release.
+	Up,
 }
 
 /// The picture source of a [`ViewerWidget`].
@@ -95,6 +133,10 @@ pub struct ViewerWidget<C: PlaybackClock> {
 	focus_handle: FocusHandle,
 	show_safe_frames: bool,
 	zoom: bool,
+	/// The picture area's bounds in window pixels, captured each render
+	/// (the interact pointer forwarding maps window events to the picture's
+	/// local pixels from these).
+	picture_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl<C: PlaybackClock> ViewerWidget<C> {
@@ -133,6 +175,7 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 			focus_handle: cx.focus_handle(),
 			show_safe_frames: false,
 			zoom: false,
+			picture_bounds: Rc::new(Cell::new(None)),
 		}
 	}
 
@@ -157,6 +200,30 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 	pub fn set_cpu_frame(&mut self, frame: Option<Arc<RenderImage>>, cx: &mut Context<Self>) {
 		self.frame_source = frame.map(ViewerFrameSource::CpuFrame);
 		cx.notify();
+	}
+
+	/// The picture area's current bounds in window pixels, or `None` before
+	/// the picture was first painted. The host uses these to convert the
+	/// [`ViewerEvent::InteractPointer`] positions (picture-local) into the
+	/// interact's viewport coordinates.
+	pub fn picture_bounds(&self) -> Option<Bounds<Pixels>> {
+		self.picture_bounds.get()
+	}
+
+	fn emit_interact_pointer(
+		&mut self,
+		kind: InteractPointerKind,
+		position: Point<Pixels>,
+		button: Option<MouseButton>,
+		pressed: bool,
+		cx: &mut Context<Self>,
+	) {
+		cx.emit(ViewerEvent::InteractPointer {
+			kind,
+			position: Point::new(f32::from(position.x), f32::from(position.y)),
+			button,
+			pressed,
+		});
 	}
 
 	fn poll_clock(&mut self, cx: &mut Context<Self>) {
@@ -203,7 +270,62 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 				s: 0.0,
 				l: 0.0,
 				a: 1.0,
-			});
+			})
+			// The picture is focusable so keyboard events reach the OFX
+			// interact forwarding while the user is interacting with the
+			// picture (the panel decides what an active interact consumes).
+			.focusable()
+			.on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+				if let Some(bounds) = this.picture_bounds.get() {
+					this.emit_interact_pointer(
+						InteractPointerKind::Move,
+						event.position - bounds.origin,
+						None,
+						event.pressed_button.is_some(),
+						cx,
+					);
+				}
+			}))
+			.on_mouse_down(
+				MouseButton::Left,
+				cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+					if let Some(bounds) = this.picture_bounds.get() {
+						this.emit_interact_pointer(
+							InteractPointerKind::Down,
+							event.position - bounds.origin,
+							Some(event.button),
+							true,
+							cx,
+						);
+					}
+				}),
+			)
+			.on_mouse_up(
+				MouseButton::Left,
+				cx.listener(|this, event: &gpui::MouseUpEvent, _window, cx| {
+					if let Some(bounds) = this.picture_bounds.get() {
+						this.emit_interact_pointer(
+							InteractPointerKind::Up,
+							event.position - bounds.origin,
+							Some(event.button),
+							false,
+							cx,
+						);
+					}
+				}),
+			)
+			.on_key_down(cx.listener(|_this, event: &KeyDownEvent, _window, cx| {
+				cx.emit(ViewerEvent::InteractKey {
+					down: true,
+					keystroke: event.keystroke.clone(),
+				});
+			}))
+			.on_key_up(cx.listener(|_this, event: &KeyUpEvent, _window, cx| {
+				cx.emit(ViewerEvent::InteractKey {
+					down: false,
+					keystroke: event.keystroke.clone(),
+				});
+			}));
 
 		if let Some(source) = &self.frame_source {
 			let fit = if self.zoom {
@@ -256,6 +378,24 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 					),
 			);
 		}
+
+		// Capture the picture area's bounds each frame so the pointer
+		// handlers above can map window coordinates to picture-local
+		// pixels. The canvas paints nothing; it only records bounds.
+		let picture_bounds = self.picture_bounds.clone();
+		picture = picture.child(
+			canvas(
+				move |bounds, _window, _cx| {
+					picture_bounds.set(Some(bounds));
+				},
+				|_bounds, (), _window, _cx| {},
+			)
+			.absolute()
+			.left_0()
+			.right_0()
+			.top_0()
+			.bottom_0(),
+		);
 
 		// Transport bar. The transport controls are icon buttons (16px icon
 		// on a 24px hit target, localized tooltips); without a registered
