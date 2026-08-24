@@ -64,6 +64,10 @@ pub struct ModalOptions {
 	pub width: gpui::Pixels,
 	/// The buttons in the footer row.
 	pub buttons: Vec<DialogButton>,
+	/// Whether a click on the dimmed backdrop dismisses the dialog
+	/// (launcher-style dialogs opt in; form dialogs keep the accidental-
+	/// click protection).
+	pub dismiss_on_mask: bool,
 }
 
 impl ModalOptions {
@@ -73,12 +77,20 @@ impl ModalOptions {
 			title: title.into(),
 			width,
 			buttons: Vec::new(),
+			dismiss_on_mask: false,
 		}
 	}
 
 	/// Add a button.
 	pub fn with_button(mut self, button: DialogButton) -> Self {
 		self.buttons.push(button);
+		self
+	}
+
+	/// Allow a backdrop click to dismiss the dialog (emits
+	/// [`ModalEvent::Dismissed`] like Escape does).
+	pub fn with_dismiss_on_mask(mut self, enabled: bool) -> Self {
+		self.dismiss_on_mask = enabled;
 		self
 	}
 }
@@ -175,6 +187,18 @@ impl Render for Modal {
 			})
 			.occlude()
 			.block_mouse_except_scroll()
+			// Backdrop click dismisses when the dialog opts in (the card
+			// below stops propagation, so only the true backdrop hits this).
+			.on_mouse_down(
+				gpui::MouseButton::Left,
+				cx.listener(move |this, _event: &gpui::MouseDownEvent, _window, cx| {
+					if this.options.dismiss_on_mask {
+						let control = this.control;
+						cx.emit(ModalEvent::Dismissed { control });
+						cx.notify();
+					}
+				}),
+			)
 			.flex()
 			.items_center()
 			.justify_center()
@@ -204,6 +228,11 @@ impl Render for Modal {
 					.bg(colors.container)
 					.debug_selector(|| "dialog-card".into())
 					.shadow_lg()
+					// Clicks inside the card never reach the backdrop's
+					// dismiss handler.
+					.on_mouse_down(gpui::MouseButton::Left, |_event, _window, cx| {
+						cx.stop_propagation();
+					})
 					.flex()
 					.flex_col()
 					.child(
@@ -213,7 +242,30 @@ impl Render for Modal {
 							.border_b_1()
 							.border_color(colors.border)
 							.text_color(colors.text)
-							.child(self.options.title.clone()),
+							.flex()
+							.items_center()
+							.child(div().flex_1().child(self.options.title.clone()))
+							.child(
+								// The universal close affordance (emits
+								// Dismissed, same as Escape).
+								div()
+									.id(ElementId::named_usize("gpui-widgets-modal-close", control))
+									.debug_selector(|| "dialog-close".into())
+									.px_1()
+									.rounded_sm()
+									.cursor_pointer()
+									.text_color(colors.disabled)
+									.on_mouse_down(
+										gpui::MouseButton::Left,
+										cx.listener(move |this, _event, _window, cx| {
+											let control = this.control;
+											cx.emit(ModalEvent::Dismissed { control });
+											cx.notify();
+											cx.stop_propagation();
+										}),
+									)
+									.child("✕"),
+							),
 					)
 					.child(
 						div()
