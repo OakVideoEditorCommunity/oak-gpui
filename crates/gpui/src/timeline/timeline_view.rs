@@ -993,6 +993,12 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 				div()
 					.flex_1()
 					.h_full()
+					// Clip the ruler at the clip area's left edge: the canvas
+					// paints translated ticks/labels when scrolled, and gpui's
+					// canvas does not self-clip — without this the labels
+					// paint over the track-headers column (the headers must
+					// occlude the timeline, not the other way round).
+					.overflow_hidden()
 					.id("timeline-ruler")
 					.on_mouse_down(
 						MouseButton::Left,
@@ -1496,15 +1502,20 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 			}))
 			// The clip-move ghost overlays the rows (an absolute child of the
 			// clip area; an empty div when no clip drag is active).
-			.child(clip_ghost_element);
-
-		let playhead = div()
-			.absolute()
-			.left(px(HEADER_WIDTH + playhead_x))
-			.top(px(0.))
-			.bottom(px(0.))
-			.w(px(1.))
-			.child(PlayheadElement::new(px(0.), playhead_color()));
+			.child(clip_ghost_element)
+			// The playhead lives INSIDE the clip area (clip-area-local x): it
+			// is clipped by the area's left edge when scrolled off-screen
+			// instead of painting over the track-headers column, and stays on
+			// top of the clips.
+			.child(
+				div()
+					.absolute()
+					.left(px(playhead_x))
+					.top(px(0.))
+					.bottom(px(0.))
+					.w(px(1.))
+					.child(PlayheadElement::new(px(0.), playhead_color())),
+			);
 
 		div().size_full().flex().flex_col().child(ruler).child(
 			div()
@@ -1513,8 +1524,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 				.flex_1()
 				.relative()
 				.child(headers)
-				.child(clip_area)
-				.child(playhead),
+				.child(clip_area),
 		)
 	}
 }
