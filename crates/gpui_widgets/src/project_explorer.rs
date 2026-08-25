@@ -25,6 +25,18 @@ fn transparent() -> gpui::Rgba {
 	}
 }
 
+/// The proxy lifecycle marker shown on a footage entry (the host maps
+/// its proxy state onto this; `None` hides the badge).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyBadge {
+	/// The proxy file exists and preview may use it.
+	Ready,
+	/// A proxy transcode is running.
+	Generating,
+	/// The last generation attempt failed.
+	Failed,
+}
+
 /// A single entry in the project tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectEntry {
@@ -36,6 +48,9 @@ pub struct ProjectEntry {
 	pub is_dir: bool,
 	/// An asset path for a thumbnail, if any.
 	pub thumbnail: Option<SharedString>,
+	/// The proxy-state badge, if the entry is footage with proxy state
+	/// worth surfacing (folders and proxy-less footage carry `None`).
+	pub proxy: Option<ProxyBadge>,
 }
 
 impl ProjectEntry {
@@ -46,6 +61,7 @@ impl ProjectEntry {
 			name: name.into(),
 			is_dir,
 			thumbnail: None,
+			proxy: None,
 		}
 	}
 
@@ -54,6 +70,34 @@ impl ProjectEntry {
 		self.thumbnail = Some(thumbnail.into());
 		self
 	}
+
+	/// Attach a proxy-state badge.
+	pub fn with_proxy_badge(mut self, badge: ProxyBadge) -> Self {
+		self.proxy = Some(badge);
+		self
+	}
+}
+
+/// The proxy badge chip: a small rounded "P" colored by lifecycle state
+/// (green ready / amber generating / red failed), readable at a glance
+/// over thumbnails and tree rows alike.
+fn proxy_badge_chip(badge: ProxyBadge) -> gpui::Div {
+	let (bg, label) = match badge {
+		ProxyBadge::Ready => (hsla(0.36, 0.65, 0.45, 1.0), "P"),
+		ProxyBadge::Generating => (hsla(0.12, 0.8, 0.5, 1.0), "P"),
+		ProxyBadge::Failed => (hsla(0.0, 0.7, 0.5, 1.0), "!"),
+	};
+	div()
+		.w(px(14.0))
+		.h(px(14.0))
+		.rounded_sm()
+		.bg(bg)
+		.flex()
+		.items_center()
+		.justify_center()
+		.text_size(px(9.0))
+		.text_color(gpui::white())
+		.child(label)
 }
 
 /// The drag payload of a draggable media entry: the entry's stable id (the
@@ -385,7 +429,10 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 						// folder/file SVGs, so the rows use text glyphs (the
 						// host's icon set is timeline/viewer tools only).
 						.child(div().w(px(16.0)).child(if entry.is_dir { "▣" } else { "▤" }))
-						.child(div().child(entry.name.clone()));
+						.child(div().child(entry.name.clone()))
+						// The proxy badge sits right after the name (tree
+						// rows have no thumbnail to overlay).
+						.children(entry.proxy.map(proxy_badge_chip));
 					if !entry.is_dir {
 						// Media rows are drag sources: the payload carries the
 						// entry id for the timeline drop target.
@@ -465,35 +512,51 @@ impl<D: ProjectDataSource> Render for ProjectExplorer<D> {
 								cx.stop_propagation();
 							}),
 						)
-						.child(if let Some(thumbnail) = entry.thumbnail.clone() {
-							// A filesystem path: load through the path resource so
-							// generated thumbnails resolve without an asset source.
-							// The wrapper div carries the test selector (the `img`
-							// element itself has no debug bounds).
+						.child(
 							div()
-								.debug_selector(move || {
-									format!("gpui-widgets-explorer-thumb-{entry_id}").into()
-								})
+								.relative()
 								.w(px(72.0))
 								.h(px(48.0))
-								.child(img(PathBuf::from(thumbnail.as_ref())).w(px(72.0)).h(px(48.0)))
-								.into_any_element()
-						} else {
-							div()
-								.debug_selector(move || {
-									format!("gpui-widgets-explorer-thumb-placeholder-{entry_id}").into()
+								.child(if let Some(thumbnail) = entry.thumbnail.clone() {
+									// A filesystem path: load through the path resource so
+									// generated thumbnails resolve without an asset source.
+									// The wrapper div carries the test selector (the `img`
+									// element itself has no debug bounds).
+									div()
+										.debug_selector(move || {
+											format!("gpui-widgets-explorer-thumb-{entry_id}").into()
+										})
+										.w(px(72.0))
+										.h(px(48.0))
+										.child(img(PathBuf::from(thumbnail.as_ref())).w(px(72.0)).h(px(48.0)))
+										.into_any_element()
+								} else {
+									div()
+										.debug_selector(move || {
+											format!("gpui-widgets-explorer-thumb-placeholder-{entry_id}").into()
+										})
+										.w(px(72.0))
+										.h(px(48.0))
+										.rounded_md()
+										.bg(Hsla::from(colors.selected).opacity(0.4))
+										.flex()
+										.items_center()
+										.justify_center()
+										.text_color(colors.text)
+										.child(entry.name.chars().next().unwrap_or(' ').to_string())
+										.into_any_element()
 								})
-								.w(px(72.0))
-								.h(px(48.0))
-								.rounded_md()
-								.bg(Hsla::from(colors.selected).opacity(0.4))
-								.flex()
-								.items_center()
-								.justify_center()
-								.text_color(colors.text)
-								.child(entry.name.chars().next().unwrap_or(' ').to_string())
-								.into_any_element()
-						})
+								// The proxy badge overlays the thumbnail's
+								// bottom-right corner (角标).
+								.children(entry.proxy.map(|badge| {
+									div()
+										.absolute()
+										.bottom(px(2.0))
+										.right(px(2.0))
+										.child(proxy_badge_chip(badge))
+										.into_any_element()
+								})),
+						)
 						.child(
 							div()
 								.w_full()
