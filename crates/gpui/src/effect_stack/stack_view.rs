@@ -452,6 +452,9 @@ impl<D: EffectStackDataSource> Render for EffectStackView<D> {
 			.flex_col()
 			.w_full()
 			.h_full()
+			// The card list can outgrow the panel, so scroll vertically
+			// (header and add button scroll along with the cards).
+			.overflow_y_scroll()
 			.track_focus(&focus_handle)
 			.on_drag_move::<EffectId>(cx.listener(|this, _event, _window, cx| {
 				// Runs first (capture phase, registration order): clear the
