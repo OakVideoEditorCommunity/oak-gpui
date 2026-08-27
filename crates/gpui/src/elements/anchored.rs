@@ -2,8 +2,8 @@ use smallvec::SmallVec;
 
 use crate::{
 	Anchor, AnyElement, App, Axis, Bounds, Display, Edges, Element, GlobalElementId,
-	InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point, Position, Size, Style,
-	Window, point, px,
+	HitboxBehavior, InspectorElementId, IntoElement, LayoutId, ParentElement, Pixels, Point,
+	Position, Size, Style, Window, point, px,
 };
 
 /// The state that the anchored element element uses to track its children.
@@ -207,6 +207,14 @@ impl Element for Anchored {
 		let offset = desired.origin - bounds.origin;
 		let offset = point(offset.x.round(), offset.y.round());
 
+		// Block the mouse over the popup's final bounds so clicks on it do not
+		// fall through to the UI beneath (context menus, popovers, pickers).
+		// The hitbox is inserted before the children's, so child hitboxes
+		// (menu items etc.) still receive events within the popup, while the
+		// anchor switch / window snapping above guarantee `desired` matches
+		// where the children are actually rendered.
+		window.insert_hitbox(desired, HitboxBehavior::BlockMouse);
+
 		window.with_element_offset(offset, |window| {
 			for child in &mut self.children {
 				child.prepaint(window, cx);
@@ -290,9 +298,12 @@ impl AnchoredPositionMode {
 
 #[cfg(test)]
 mod tests {
+	use std::cell::RefCell;
+	use std::rc::Rc;
+
 	use crate::{
-		Context, Pixels, PlatformInput, Point, TestAppContext, Window, deferred, div, point,
-		prelude::*, px, size,
+		Context, Modifiers, MouseButton, Pixels, PlatformInput, Point, TestAppContext,
+		VisualTestContext, Window, deferred, div, point, prelude::*, px, size,
 	};
 
 	struct AnchoredTestView {
@@ -394,5 +405,64 @@ mod tests {
 
 		assert_eq!(menu_bounds.origin, point(px(100.), px(300.)));
 		assert_eq!(menu_bounds.size, size(px(200.), px(300.)));
+	}
+
+	struct AnchoredOcclusionView {
+		background_clicks: Rc<RefCell<usize>>,
+	}
+
+	impl Render for AnchoredOcclusionView {
+		fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+			let background_clicks = self.background_clicks.clone();
+			div()
+				.size_full()
+				.child(
+					div()
+						.id("background")
+						.size_full()
+						.on_mouse_down(MouseButton::Left, move |_, _, _| {
+							*background_clicks.borrow_mut() += 1;
+						}),
+				)
+				.child(
+					deferred(
+						super::anchored()
+							.position(point(px(100.), px(100.)))
+							.child(div().id("popup").w(px(200.)).h(px(300.))),
+					)
+					.with_priority(1),
+				)
+		}
+	}
+
+	/// An anchored popup overlaying other UI must not let clicks on its area
+	/// fall through to the elements beneath it (the "click-through" bug).
+	/// Clicks outside the popup must still reach the background.
+	#[gpui::test]
+	fn test_anchored_popup_blocks_clicks_on_background(cx: &mut TestAppContext) {
+		let background_clicks = Rc::new(RefCell::new(0));
+		let window = cx.open_window(size(px(800.), px(600.)), |_, _| AnchoredOcclusionView {
+			background_clicks: background_clicks.clone(),
+		});
+
+		cx.run_until_parked();
+
+		let mut cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+
+		// A click inside the popup (popup occupies (100,100)-(300,400)).
+		cx.simulate_click(point(px(200.), px(250.)), Modifiers::none());
+		assert_eq!(
+			*background_clicks.borrow(),
+			0,
+			"click inside the anchored popup fell through to the background"
+		);
+
+		// A click outside the popup must still reach the background.
+		cx.simulate_click(point(px(50.), px(50.)), Modifiers::none());
+		assert_eq!(
+			*background_clicks.borrow(),
+			1,
+			"click outside the anchored popup did not reach the background"
+		);
 	}
 }
