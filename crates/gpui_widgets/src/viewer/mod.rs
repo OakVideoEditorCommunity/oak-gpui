@@ -107,6 +107,146 @@ pub enum InteractPointerKind {
 	Up,
 }
 
+/// The zoom state of the viewer picture.
+///
+/// [`ViewerZoom::Fit`] fits the whole frame inside the picture area (like the
+/// old contain mode); [`ViewerZoom::Level`] renders the frame at a fixed
+/// multiple of its native resolution, clipped to the picture area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewerZoom {
+	/// Fit the entire frame (contain).
+	Fit,
+	/// A fixed multiple of the native resolution (index into
+	/// [`VIEWER_ZOOM_LEVELS`]).
+	Level(usize),
+}
+
+impl ViewerZoom {
+	/// The next zoom in the cycle used by the toolbar zoom button: Fit → 100%
+	/// → 200% → Fit; any other level steps up by one.
+	pub fn next(self) -> Self {
+		match self {
+			ViewerZoom::Fit => ViewerZoom::Level(4),
+			ViewerZoom::Level(i) if i + 1 >= VIEWER_ZOOM_LEVELS.len() => ViewerZoom::Fit,
+			ViewerZoom::Level(i) if i == 3 => ViewerZoom::Level(7),
+			ViewerZoom::Level(i) => ViewerZoom::Level(i + 1),
+		}
+	}
+}
+
+/// The safe-frame margin overlay.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SafeMargins {
+	/// No overlay.
+	Off,
+	/// The standard 90% × 80% action-safe margins.
+	On,
+	/// Custom horizontal/vertical fractions of the frame (e.g. 0.9 × 0.8).
+	Custom(f32, f32),
+}
+
+impl SafeMargins {
+	/// The next state in the toolbar cycle: Off → On → Off; custom behaves
+	/// like On (cycles back to Off).
+	pub fn next(self) -> Self {
+		match self {
+			SafeMargins::Off => SafeMargins::On,
+			SafeMargins::On | SafeMargins::Custom(_, _) => SafeMargins::Off,
+		}
+	}
+
+	/// The frame fractions the overlay covers, or `None` when disabled.
+	pub fn ratio(self) -> Option<(f32, f32)> {
+		match self {
+			SafeMargins::Off => None,
+			SafeMargins::On => Some((0.9, 0.8)),
+			SafeMargins::Custom(w, h) => Some((w, h)),
+		}
+	}
+}
+
+/// How the audio waveform overlay behaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaveformMode {
+	/// Show the waveform only while playing.
+	Automatic = 0,
+	/// Show the waveform always (never hide it).
+	Only = 1,
+	/// Show both the waveform and the picture.
+	Both = 2,
+}
+
+impl WaveformMode {
+	/// The persisted config value (`0`/`1`/`2`).
+	pub fn config_value(self) -> i32 {
+		self as i32
+	}
+
+	/// Reconstruct from a persisted config value, clamping out-of-range
+	/// values back to [`WaveformMode::Automatic`].
+	pub fn from_config_value(value: i32) -> Self {
+		match value.clamp(0, 2) {
+			1 => WaveformMode::Only,
+			2 => WaveformMode::Both,
+			_ => WaveformMode::Automatic,
+		}
+	}
+}
+
+/// The zoom levels offered by the context menu, as multiples of the native
+/// resolution. Index 4 is 100% and index 7 is 200% — those are the stops the
+/// toolbar zoom button cycles through.
+pub const VIEWER_ZOOM_LEVELS: [f32; 10] = [
+	0.10, 0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00, 4.00, 8.00,
+];
+
+/// A smoothed per-second frame-rate meter for the `Show FPS` overlay.
+#[derive(Debug, Clone, Copy)]
+pub struct FpsCounter {
+	last: Option<std::time::Instant>,
+	smoothed: f32,
+	samples: u32,
+}
+
+impl FpsCounter {
+	/// A fresh counter with no samples.
+	pub fn new() -> Self {
+		Self {
+			last: None,
+			smoothed: 0.0,
+			samples: 0,
+		}
+	}
+
+	/// Record a new frame at `now` and update the smoothed rate.
+	pub fn record(&mut self, now: std::time::Instant) {
+		if let Some(last) = self.last {
+			let dt = now.duration_since(last).as_secs_f32();
+			if dt > 0.0 {
+				let instant = 1.0 / dt;
+				self.smoothed = if self.samples == 0 {
+					instant
+				} else {
+					self.smoothed * 0.9 + instant * 0.1
+				};
+				self.samples += 1;
+			}
+		}
+		self.last = Some(now);
+	}
+
+	/// The smoothed rate, or `0.0` before the second frame.
+	pub fn value(&self) -> f32 {
+		self.smoothed
+	}
+}
+
+impl Default for FpsCounter {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 /// The picture source of a [`ViewerWidget`].
 ///
 /// On macOS the fast path is a CoreVideo [`SurfaceSource`]; on platforms
@@ -131,8 +271,10 @@ pub struct ViewerWidget<C: PlaybackClock> {
 	transport: TransportState,
 	frame_source: Option<ViewerFrameSource>,
 	focus_handle: FocusHandle,
-	show_safe_frames: bool,
-	zoom: bool,
+	safe_margins: SafeMargins,
+	zoom: ViewerZoom,
+	show_fps: bool,
+	fps: FpsCounter,
 	/// The picture area's bounds in window pixels, captured each render
 	/// (the interact pointer forwarding maps window events to the picture's
 	/// local pixels from these).
@@ -173,8 +315,10 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 			transport: TransportState::new(),
 			frame_source: None,
 			focus_handle: cx.focus_handle(),
-			show_safe_frames: false,
-			zoom: false,
+			safe_margins: SafeMargins::Off,
+			zoom: ViewerZoom::Fit,
+			show_fps: false,
+			fps: FpsCounter::new(),
 			picture_bounds: Rc::new(Cell::new(None)),
 		}
 	}
@@ -210,6 +354,52 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 		self.picture_bounds.get()
 	}
 
+	/// The current safe-margin overlay state.
+	pub fn safe_margins(&self) -> SafeMargins {
+		self.safe_margins
+	}
+
+	/// Set the safe-margin overlay state and repaint.
+	pub fn set_safe_margins(&mut self, margins: SafeMargins, cx: &mut Context<Self>) {
+		self.safe_margins = margins;
+		cx.notify();
+	}
+
+	/// The current zoom state.
+	pub fn zoom(&self) -> ViewerZoom {
+		self.zoom
+	}
+
+	/// Set the zoom state and repaint.
+	pub fn set_zoom(&mut self, zoom: ViewerZoom, cx: &mut Context<Self>) {
+		self.zoom = zoom;
+		cx.notify();
+	}
+
+	/// Whether the frame-rate overlay is shown.
+	pub fn show_fps(&self) -> bool {
+		self.show_fps
+	}
+
+	/// Toggle the frame-rate overlay and repaint.
+	pub fn set_show_fps(&mut self, show: bool, cx: &mut Context<Self>) {
+		self.show_fps = show;
+		cx.notify();
+	}
+
+	/// The frame's native size in pixels when the source carries one (CPU
+	/// frames), `None` for platform surfaces. Used to size the safe-frame
+	/// overlay relative to the actual picture.
+	fn frame_pixel_size(&self) -> Option<(f32, f32)> {
+		match &self.frame_source {
+			Some(ViewerFrameSource::CpuFrame(image)) => {
+				let size = image.size(0);
+				Some((size.width.0 as f32, size.height.0 as f32))
+			}
+			_ => None,
+		}
+	}
+
 	fn emit_interact_pointer(
 		&mut self,
 		kind: InteractPointerKind,
@@ -231,6 +421,7 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 		let frame = clock.current_frame();
 		let playing = clock.is_playing();
 		if frame != self.transport.frame || playing != self.transport.playing {
+			self.fps.record(std::time::Instant::now());
 			self.transport.frame = frame;
 			self.transport.playing = playing;
 			cx.notify();
@@ -328,22 +519,50 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			}));
 
 		if let Some(source) = &self.frame_source {
-			let fit = if self.zoom {
-				ObjectFit::Cover
-			} else {
-				ObjectFit::Contain
-			};
-			let picture_element: AnyElement = match source {
-				ViewerFrameSource::Surface(surface_source) => surface(surface_source.clone())
-					.size_full()
-					.object_fit(fit)
-					.into_any(),
-				ViewerFrameSource::CpuFrame(image) => img(image.clone())
-					.size_full()
-					.min_w_0()
-					.min_h_0()
-					.object_fit(fit)
-					.into_any(),
+			let picture_element: AnyElement = match self.zoom {
+				// Fit renders the whole frame, contained inside the area.
+				ViewerZoom::Fit => match source {
+					ViewerFrameSource::Surface(surface_source) => surface(surface_source.clone())
+						.size_full()
+						.object_fit(ObjectFit::Contain)
+						.into_any(),
+					ViewerFrameSource::CpuFrame(image) => img(image.clone())
+						.size_full()
+						.min_w_0()
+						.min_h_0()
+						.object_fit(ObjectFit::Contain)
+						.into_any(),
+				},
+				// A zoom level renders at a fixed multiple of the native
+				// resolution. Only a CPU frame carries its pixel size; a
+				// platform surface has no resolution here, so it falls back
+				// to fit.
+				ViewerZoom::Level(i) => match source {
+					ViewerFrameSource::Surface(surface_source) => surface(surface_source.clone())
+						.size_full()
+						.object_fit(ObjectFit::Contain)
+						.into_any(),
+					ViewerFrameSource::CpuFrame(image) => {
+						let scale = VIEWER_ZOOM_LEVELS[i];
+						let size = image.size(0);
+						div()
+							.absolute()
+							.left_0()
+							.right_0()
+							.top_0()
+							.bottom_0()
+							.flex()
+							.items_center()
+							.justify_center()
+							.child(
+								img(image.clone())
+									.w(px(size.width.0 as f32 * scale))
+									.h(px(size.height.0 as f32 * scale))
+									.object_fit(ObjectFit::Fill),
+							)
+							.into_any()
+					}
+				},
 			};
 			picture = picture.child(picture_element);
 		} else {
@@ -358,7 +577,9 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			);
 		}
 
-		if self.show_safe_frames {
+		if let (Some((frame_w, frame_h)), Some((margin_w, margin_h))) =
+			(self.frame_pixel_size(), self.safe_margins.ratio())
+		{
 			picture = picture.child(
 				div()
 					.absolute()
@@ -371,11 +592,27 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 					.justify_center()
 					.child(
 						div()
-							.w(px(560.0))
-							.h(px(315.0))
+							.w(px(frame_w * margin_w))
+							.h(px(frame_h * margin_h))
 							.border_1()
 							.border_color(colors.selected),
 					),
+			);
+		}
+
+		if self.show_fps {
+			picture = picture.child(
+				div()
+					.absolute()
+					.right_1()
+					.top_1()
+					.px_1()
+					.py_0p5()
+					.rounded_md()
+					.bg(colors.container)
+					.text_xs()
+					.text_color(colors.text)
+					.child(format!("{:.1} fps", self.fps.value())),
 			);
 		}
 
@@ -536,7 +773,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 				crate::i18n::tr("viewer.safe_frames", "安全框"),
 				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
-					this.show_safe_frames = !this.show_safe_frames;
+					this.safe_margins = this.safe_margins.next();
 					this.emit(
 						ViewerEvent::ToggleSafeFramesRequested {
 							control: this.control,
@@ -550,7 +787,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 				crate::i18n::tr("viewer.zoom", "缩放"),
 				&colors,
 				cx.listener(|this, _event: &ClickEvent, _window, cx| {
-					this.zoom = !this.zoom;
+					this.zoom = this.zoom.next();
 					this.emit(
 						ViewerEvent::ToggleZoomRequested {
 							control: this.control,
@@ -845,10 +1082,59 @@ mod tests {
 				host.events
 					.iter()
 					.any(|e| matches!(e, ViewerEvent::ToggleSafeFramesRequested { .. })),
-				host.viewer.read(app).show_safe_frames,
+				host.viewer.read(app).safe_margins,
 			)
 		});
 		assert!(requested, "expected a ToggleSafeFramesRequested event");
-		assert!(shown, "safe frames should now be shown locally");
+		assert_eq!(shown, SafeMargins::On, "safe margins should now be shown");
+	}
+
+	#[test]
+	fn zoom_cycles_fit_through_levels() {
+		// The toolbar zoom button cycles Fit → 100% → 200% → Fit.
+		assert_eq!(ViewerZoom::Fit.next(), ViewerZoom::Level(4));
+		assert_eq!(ViewerZoom::Level(4).next(), ViewerZoom::Level(5));
+		assert_eq!(ViewerZoom::Level(3).next(), ViewerZoom::Level(7));
+		assert_eq!(ViewerZoom::Level(7).next(), ViewerZoom::Level(8));
+		assert_eq!(
+			ViewerZoom::Level(VIEWER_ZOOM_LEVELS.len() - 1).next(),
+			ViewerZoom::Fit
+		);
+	}
+
+	#[test]
+	fn safe_margins_cycle_and_ratio() {
+		assert_eq!(SafeMargins::Off.next(), SafeMargins::On);
+		assert_eq!(SafeMargins::On.next(), SafeMargins::Off);
+		assert_eq!(SafeMargins::Custom(0.5, 0.5).next(), SafeMargins::Off);
+		assert_eq!(SafeMargins::Off.ratio(), None);
+		assert_eq!(SafeMargins::On.ratio(), Some((0.9, 0.8)));
+		assert_eq!(SafeMargins::Custom(0.7, 0.6).ratio(), Some((0.7, 0.6)));
+	}
+
+	#[test]
+	fn waveform_mode_config_round_trips() {
+		assert_eq!(WaveformMode::Automatic.config_value(), 0);
+		assert_eq!(WaveformMode::Only.config_value(), 1);
+		assert_eq!(WaveformMode::Both.config_value(), 2);
+		assert_eq!(WaveformMode::from_config_value(0), WaveformMode::Automatic);
+		assert_eq!(WaveformMode::from_config_value(1), WaveformMode::Only);
+		assert_eq!(WaveformMode::from_config_value(2), WaveformMode::Both);
+		// Out-of-range values clamp to the nearest valid mode.
+		assert_eq!(WaveformMode::from_config_value(-5), WaveformMode::Automatic);
+		assert_eq!(WaveformMode::from_config_value(9), WaveformMode::Both);
+	}
+
+	#[test]
+	fn fps_counter_smooths_measured_rate() {
+		let mut counter = FpsCounter::new();
+		let t0 = std::time::Instant::now();
+		counter.record(t0);
+		assert_eq!(counter.value(), 0.0, "no rate before a second sample");
+		// 100ms apart => 10 fps instant.
+		counter.record(t0 + std::time::Duration::from_millis(100));
+		assert!((counter.value() - 10.0).abs() < 1.0);
+		counter.record(t0 + std::time::Duration::from_millis(200));
+		assert!((counter.value() - 10.0).abs() < 1.5);
 	}
 }
