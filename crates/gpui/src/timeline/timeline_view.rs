@@ -1642,7 +1642,8 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 				.size_full(),
 			);
 		// The marquee (rubber-band) selection only exists on the select
-		// tool; the razor and zoom tools swap the area cursor to a
+		// tool; the razor tool swaps the area cursor to a vertical text
+		// (I-beam) cursor matching its blade, and the zoom tool to a
 		// crosshair instead.
 		if tool == TimelineTool::Select {
 			clip_area = clip_area
@@ -1658,7 +1659,10 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 					this.finish_marquee(cx);
 				}));
 		}
-		if tool == TimelineTool::Razor || tool == TimelineTool::Zoom {
+		if tool == TimelineTool::Razor {
+			clip_area = clip_area.cursor_text();
+		}
+		if tool == TimelineTool::Zoom {
 			clip_area = clip_area.cursor_crosshair();
 		}
 		let clip_area =
