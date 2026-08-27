@@ -16,7 +16,7 @@ use gpui::timeline::{FrameRate, TimeDisplay, format_timecode};
 use gpui::{
 	AnyElement, App, AsyncWindowContext, Bounds, ClickEvent, Context, Entity, EventEmitter,
 	FocusHandle, Focusable, Keystroke, KeyDownEvent, KeyUpEvent, MouseButton, MouseMoveEvent,
-	ObjectFit, Point, Pixels, Render, RenderImage, SharedString, SurfaceSource, Window,
+	ObjectFit, Point, Pixels, Render, RenderImage, Rgba, SharedString, SurfaceSource, Window,
 	canvas, colors::DefaultColors, div, img, prelude::*, px, surface,
 };
 use std::cell::Cell;
@@ -93,6 +93,12 @@ pub enum ViewerEvent {
 		down: bool,
 		/// The keystroke (modifiers + key name).
 		keystroke: Keystroke,
+	},
+	/// A colour sampled from the picture by the eyedropper (only emitted
+	/// while armed; the host routes it back to the picker that armed it).
+	EyedropperPick {
+		/// The sampled colour (0..1 components).
+		color: Rgba,
 	},
 }
 
@@ -279,6 +285,10 @@ pub struct ViewerWidget<C: PlaybackClock> {
 	/// (the interact pointer forwarding maps window events to the picture's
 	/// local pixels from these).
 	picture_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+	/// Whether the eyedropper is armed: the cursor becomes a crosshair and a
+	/// click samples the pixel under it instead of forwarding an interact
+	/// pointer event.
+	eyedropper_armed: bool,
 }
 
 impl<C: PlaybackClock> ViewerWidget<C> {
@@ -320,6 +330,7 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 			show_fps: false,
 			fps: FpsCounter::new(),
 			picture_bounds: Rc::new(Cell::new(None)),
+			eyedropper_armed: false,
 		}
 	}
 
@@ -352,6 +363,23 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 	/// interact's viewport coordinates.
 	pub fn picture_bounds(&self) -> Option<Bounds<Pixels>> {
 		self.picture_bounds.get()
+	}
+
+	/// Whether the eyedropper is armed: the cursor becomes a crosshair and a
+	/// click samples the pixel under it into a [`ViewerEvent::EyedropperPick`]
+	/// instead of forwarding an interact pointer event.
+	pub fn eyedropper_armed(&self) -> bool {
+		self.eyedropper_armed
+	}
+
+	/// Arm / disarm the eyedropper and repaint. No-op when unchanged, so
+	/// calling this every frame from a host poll is cheap.
+	pub fn set_eyedropper_armed(&mut self, armed: bool, cx: &mut Context<Self>) {
+		if self.eyedropper_armed == armed {
+			return;
+		}
+		self.eyedropper_armed = armed;
+		cx.notify();
 	}
 
 	/// The current safe-margin overlay state.
@@ -416,6 +444,35 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 		});
 	}
 
+	/// Sample the pixel under `position` (window pixels) from the current CPU
+	/// frame and emit [`ViewerEvent::EyedropperPick`]. No-op without a CPU
+	/// frame, when the frame carries no bytes, or when the point lands in the
+	/// letterbox. Only called while armed, by the picture's mouse-down handler.
+	fn sample_eyedropper(&self, position: Point<Pixels>, cx: &mut Context<Self>) {
+		let Some(bounds) = self.picture_bounds.get() else {
+			return;
+		};
+		let Some(ViewerFrameSource::CpuFrame(image)) = &self.frame_source else {
+			return;
+		};
+		let size = image.size(0);
+		let (w, h) = (size.width.0 as u32, size.height.0 as u32);
+		let Some(bytes) = image.as_bytes(0) else {
+			return;
+		};
+		let local = position - bounds.origin;
+		let (box_w, box_h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+		let u = f32::from(local.x) / box_w;
+		let v = f32::from(local.y) / box_h;
+		let Some((uu, vv)) = contain_uv(w, h, box_w, box_h, u, v) else {
+			return;
+		};
+		let Some(color) = sample_bgra8(bytes, w, h, uu, vv) else {
+			return;
+		};
+		cx.emit(ViewerEvent::EyedropperPick { color });
+	}
+
 	fn poll_clock(&mut self, cx: &mut Context<Self>) {
 		let clock = self.clock.read(cx);
 		let frame = clock.current_frame();
@@ -432,6 +489,53 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 		cx.emit(event);
 		cx.notify();
 	}
+}
+
+/// Map a point inside a `box_w` x `box_h` widget to unit coordinates in an
+/// `img_w` x `img_h` image laid out with `ObjectFit::Contain` (the `img`
+/// default). Returns `None` when the point falls in the letterbox.
+fn contain_uv(
+	img_w: u32,
+	img_h: u32,
+	box_w: f32,
+	box_h: f32,
+	u: f32,
+	v: f32,
+) -> Option<(f32, f32)> {
+	let (w, h) = (img_w as f32, img_h as f32);
+	if w <= 0.0 || h <= 0.0 || box_w <= 0.0 || box_h <= 0.0 {
+		return None;
+	}
+	let scale = (box_w / w).min(box_h / h);
+	let cw = w * scale;
+	let ch = h * scale;
+	let ox = (box_w - cw) / 2.0;
+	let oy = (box_h - ch) / 2.0;
+	let px = u * box_w - ox;
+	let py = v * box_h - oy;
+	if px < 0.0 || py < 0.0 || px > cw || py > ch {
+		return None;
+	}
+	Some((px / cw, py / ch))
+}
+
+/// Sample a BGRA8 frame (row-major, top-to-bottom — gpui's `img` byte order)
+/// at unit coordinates (0..1 each); out-of-range coordinates clamp to the
+/// nearest edge pixel. `None` for an empty frame or truncated bytes.
+fn sample_bgra8(bytes: &[u8], w: u32, h: u32, u: f32, v: f32) -> Option<Rgba> {
+	if w == 0 || h == 0 {
+		return None;
+	}
+	let x = (u.clamp(0.0, 1.0) * (w - 1) as f32).round() as u32;
+	let y = (v.clamp(0.0, 1.0) * (h - 1) as f32).round() as u32;
+	let i = ((y * w + x) * 4) as usize;
+	let px = bytes.get(i..i + 4)?;
+	Some(Rgba {
+		r: px[2] as f32 / 255.0,
+		g: px[1] as f32 / 255.0,
+		b: px[0] as f32 / 255.0,
+		a: px[3] as f32 / 255.0,
+	})
 }
 
 impl<C: PlaybackClock> EventEmitter<ViewerEvent> for ViewerWidget<C> {}
@@ -451,6 +555,7 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 		// The picture area: surface (or placeholder), safe frames and zoom.
 		let mut picture = div()
 			.id("gpui-widgets-viewer-picture")
+			.debug_selector(|| "gpui-widgets-viewer-picture".into())
 			.flex_1()
 			.min_w_0()
 			.min_h_0()
@@ -467,6 +572,11 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			// picture (the panel decides what an active interact consumes).
 			.focusable()
 			.on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+				// While armed the pointer is a crosshair; the eyedropper
+				// only reacts to a click, so moves are swallowed.
+				if this.eyedropper_armed {
+					return;
+				}
 				if let Some(bounds) = this.picture_bounds.get() {
 					this.emit_interact_pointer(
 						InteractPointerKind::Move,
@@ -480,6 +590,10 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			.on_mouse_down(
 				MouseButton::Left,
 				cx.listener(|this, event: &gpui::MouseDownEvent, _window, cx| {
+					if this.eyedropper_armed {
+						this.sample_eyedropper(event.position, cx);
+						return;
+					}
 					if let Some(bounds) = this.picture_bounds.get() {
 						this.emit_interact_pointer(
 							InteractPointerKind::Down,
@@ -494,6 +608,9 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 			.on_mouse_up(
 				MouseButton::Left,
 				cx.listener(|this, event: &gpui::MouseUpEvent, _window, cx| {
+					if this.eyedropper_armed {
+						return;
+					}
 					if let Some(bounds) = this.picture_bounds.get() {
 						this.emit_interact_pointer(
 							InteractPointerKind::Up,
@@ -517,6 +634,10 @@ impl<C: PlaybackClock> Render for ViewerWidget<C> {
 					keystroke: event.keystroke.clone(),
 				});
 			}));
+
+		if self.eyedropper_armed {
+			picture = picture.cursor_crosshair();
+		}
 
 		if let Some(source) = &self.frame_source {
 			let picture_element: AnyElement = match self.zoom {
@@ -994,7 +1115,7 @@ mod tests {
 				.viewer
 				.clone()
 				.update(app, |viewer, cx| viewer.set_cpu_frame(Some(frame), cx));
-			window.draw(app);
+			let _ = window.draw(app);
 		});
 		cx.run_until_parked();
 
@@ -1012,11 +1133,135 @@ mod tests {
 				.viewer
 				.clone()
 				.update(app, |viewer, cx| viewer.set_cpu_frame(None, cx));
-			window.draw(app);
+			let _ = window.draw(app);
 		});
 		cx.run_until_parked();
 		let is_none = cx.read(|app| host.read(app).viewer.read(app).frame_source.is_none());
 		assert!(is_none);
+	}
+
+	#[test]
+	fn contain_uv_maps_letterbox() {
+		// A 4x3 image inside a 72x48 box: scale = min(18, 16) = 16, so the
+		// content is 64x48, letterboxed by 4px on each side.
+		assert_eq!(contain_uv(4, 3, 72.0, 48.0, 0.5, 0.5), Some((0.5, 0.5)));
+		assert_eq!(contain_uv(4, 3, 72.0, 48.0, 0.0, 0.5), None, "left letterbox");
+		assert_eq!(contain_uv(4, 3, 72.0, 48.0, 1.0, 0.5), None, "right letterbox");
+		// The content's right edge sits at u = 4/72 + 64/72.
+		let right = contain_uv(4, 3, 72.0, 48.0, 68.0 / 72.0, 0.5).unwrap();
+		assert!((right.0 - 1.0).abs() < 1e-6 && (right.1 - 0.5).abs() < 1e-6);
+		// Degenerate boxes / images sample nothing.
+		assert_eq!(contain_uv(0, 3, 72.0, 48.0, 0.5, 0.5), None);
+		assert_eq!(contain_uv(4, 3, 0.0, 48.0, 0.5, 0.5), None);
+	}
+
+	#[test]
+	fn sample_bgra8_reads_corners() {
+		// A 4x2 BGRA frame: red top-left, green top-right, blue bottom-left,
+		// white/128 bottom-right.
+		let mut bytes = vec![0u8; 4 * 2 * 4];
+		let put = |bytes: &mut [u8], x: u32, y: u32, b: u8, g: u8, r: u8, a: u8| {
+			let i = ((y * 4 + x) * 4) as usize;
+			bytes[i..i + 4].copy_from_slice(&[b, g, r, a]);
+		};
+		put(&mut bytes, 0, 0, 0, 0, 255, 255); // red
+		put(&mut bytes, 3, 0, 0, 255, 0, 255); // green
+		put(&mut bytes, 0, 1, 255, 0, 0, 255); // blue
+		put(&mut bytes, 3, 1, 255, 255, 255, 128); // white half-alpha
+
+		let close = |a: Rgba, b: Rgba| {
+			(a.r - b.r).abs() < 1e-6
+				&& (a.g - b.g).abs() < 1e-6
+				&& (a.b - b.b).abs() < 1e-6
+				&& (a.a - b.a).abs() < 1e-6
+		};
+
+		let red = Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+		let green = Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 };
+		let blue = Rgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0 };
+		let white_half = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 128.0 / 255.0 };
+		assert!(close(sample_bgra8(&bytes, 4, 2, 0.0, 0.0).unwrap(), red), "top-left");
+		assert!(close(sample_bgra8(&bytes, 4, 2, 1.0, 0.0).unwrap(), green), "top-right");
+		assert!(close(sample_bgra8(&bytes, 4, 2, 0.0, 1.0).unwrap(), blue), "bottom-left");
+		assert!(
+			close(sample_bgra8(&bytes, 4, 2, 1.0, 1.0).unwrap(), white_half),
+			"bottom-right translucent"
+		);
+
+		// Out-of-range coordinates clamp to the nearest edge pixel.
+		assert!(close(sample_bgra8(&bytes, 4, 2, 2.0, -0.5).unwrap(), green), "clamps u/v");
+		assert!(close(sample_bgra8(&bytes, 4, 2, -1.0, 2.0).unwrap(), blue), "clamps negative");
+		// (0.5, 0.5) rounds to pixel (2, 1), which was never set (transparent
+		// black) — exercises the rounding path.
+		let mid = sample_bgra8(&bytes, 4, 2, 0.5, 0.5).unwrap();
+		assert!(mid.r.abs() < 1e-6 && mid.a.abs() < 1e-6, "middle pixel unset");
+		// Truncated bytes sample nothing: pixel (2, 1) needs bytes 24..28, so
+		// a 27-byte buffer leaves the range short.
+		assert!(sample_bgra8(&bytes[..27], 4, 2, 0.5, 0.5).is_none());
+	}
+
+	/// While armed, clicking the picture samples the pixel under the cursor
+	/// into an [`ViewerEvent::EyedropperPick`] and swallows the interact
+	/// pointer events.
+	#[gpui::test]
+	async fn armed_eyedropper_click_samples_the_picture(cx: &mut TestAppContext) {
+		use gpui::RenderImage;
+		use image::{Frame, RgbaImage};
+
+		// A 2x2 frame: red / green / blue / white corners, RGBA -> BGRA as
+		// gpui expects.
+		let mut rgba = RgbaImage::new(2, 2);
+		rgba.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+		rgba.put_pixel(1, 0, image::Rgba([0, 255, 0, 255]));
+		rgba.put_pixel(0, 1, image::Rgba([0, 0, 255, 255]));
+		rgba.put_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+		for pixel in rgba.chunks_exact_mut(4) {
+			pixel.swap(0, 2);
+		}
+		let frame = Arc::new(RenderImage::new(smallvec::SmallVec::from_elem(
+			Frame::new(rgba),
+			1,
+		)));
+
+		let (cx, host) = make_host(cx);
+		cx.update(|window, app| {
+			host.read(app)
+				.viewer
+				.clone()
+				.update(app, |viewer, cx| {
+					viewer.set_cpu_frame(Some(frame), cx);
+					viewer.set_eyedropper_armed(true, cx);
+				});
+			let _ = window.draw(app);
+		});
+		cx.run_until_parked();
+
+		// The 2x2 square is contained in the (wide) picture area, so the
+		// picture centre maps to image pixel (1, 1) = white.
+		let picture = cx
+			.debug_bounds("gpui-widgets-viewer-picture")
+			.expect("picture painted");
+		cx.simulate_click(picture.center(), Modifiers::none());
+		cx.run_until_parked();
+
+		let (pick, no_interact) = cx.read(|app| {
+			let events = &host.read(app).events;
+			(
+				events.iter().find_map(|e| match e {
+					ViewerEvent::EyedropperPick { color } => Some(*color),
+					_ => None,
+				}),
+				!events
+					.iter()
+					.any(|e| matches!(e, ViewerEvent::InteractPointer { .. })),
+			)
+		});
+		let pick = pick.expect("an EyedropperPick should be emitted");
+		assert!(
+			(pick.r - 1.0).abs() < 1e-6 && (pick.g - 1.0).abs() < 1e-6 && (pick.b - 1.0).abs() < 1e-6,
+			"the picture centre should sample white, got {pick:?}"
+		);
+		assert!(no_interact, "an armed click must not forward interact pointers");
 	}
 
 	fn make_host(cx: &mut TestAppContext) -> (&'static mut VisualTestContext, Entity<Host>) {
