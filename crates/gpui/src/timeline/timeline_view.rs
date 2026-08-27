@@ -68,10 +68,10 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 
 use crate::{
-	AnyElement, App, Context, DragMoveEvent, ElementId, Entity, EventEmitter, FocusHandle,
-	Focusable, Hsla, MouseButton, MouseDownEvent, PinchEvent, Pixels, Point, Render, ScrollDelta,
-	ScrollWheelEvent, SharedString, Window, canvas, colors::DefaultColors, div, hsla, prelude::*,
-	px,
+	canvas, colors::DefaultColors, div, hsla, prelude::*, px, AnyElement, App, Context,
+	DragMoveEvent, ElementId, Entity, EventEmitter, FocusHandle, Focusable, Hsla, MouseButton,
+	MouseDownEvent, PinchEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, SharedString,
+	Window,
 };
 
 use super::{
@@ -80,7 +80,7 @@ use super::{
 	playhead::PlayheadElement,
 	ruler::{RulerMarker, TimelineRuler},
 	state::TimelineState,
-	time::{Frame, FrameRange, SnapKind, SnapPoint, snap},
+	time::{snap, Frame, FrameRange, SnapKind, SnapPoint},
 	track_header::{TrackHeader, TrackHeaderEvent, TrackToggleHandler},
 };
 
@@ -92,6 +92,69 @@ pub enum TrimEdge {
 	Start,
 	/// The clip's right (out) edge.
 	End,
+}
+
+/// The timeline's editing tools. The toolbar buttons and the host's Tools
+/// menu map onto these; the view dispatches its gestures by the active tool.
+///
+/// Order is significant: [`TimelineTool::from_index`] resolves the toolbar
+/// button index (the panel's `TOOLS` array uses exactly this order), and
+/// [`TimelineTool::ALL`] lists every variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TimelineTool {
+	/// Default pointer: select, move, trim, marquee.
+	Select,
+	/// Razor: a press on a clip splits it at the pointed frame.
+	Razor,
+	/// Ripple trim: trimming one edge also slides every following clip on the
+	/// track so no gap opens (the host composes the command).
+	Ripple,
+	/// Slip: dragging a clip slides its media-in while the range stays put.
+	Slip,
+	/// Roll: dragging the boundary between two adjacent clips extends one
+	/// edge while the other retracts by the same amount.
+	Roll,
+	/// Zoom: a press zooms in around the pointer; secondary (ctrl/cmd) zooms
+	/// out.
+	Zoom,
+	/// Slide: dragging a clip moves it and trims the neighbors to compensate.
+	Slide,
+	/// Track select: a press selects every clip under or to the right of the
+	/// pointer on the pointed track (secondary selects the whole track).
+	TrackSelect,
+}
+
+impl TimelineTool {
+	/// Every tool, in toolbar order (index = button order).
+	pub const ALL: [TimelineTool; 8] = [
+		TimelineTool::Select,
+		TimelineTool::Razor,
+		TimelineTool::Ripple,
+		TimelineTool::Slip,
+		TimelineTool::Roll,
+		TimelineTool::Zoom,
+		TimelineTool::Slide,
+		TimelineTool::TrackSelect,
+	];
+
+	/// The tool at toolbar `index`, or `None` when out of range.
+	pub fn from_index(index: usize) -> Option<TimelineTool> {
+		Self::ALL.get(index).copied()
+	}
+
+	/// This tool's toolbar index (the inverse of [`Self::from_index`]).
+	pub const fn index(self) -> usize {
+		match self {
+			TimelineTool::Select => 0,
+			TimelineTool::Razor => 1,
+			TimelineTool::Ripple => 2,
+			TimelineTool::Slip => 3,
+			TimelineTool::Roll => 4,
+			TimelineTool::Zoom => 5,
+			TimelineTool::Slide => 6,
+			TimelineTool::TrackSelect => 7,
+		}
+	}
 }
 
 /// An edit or view-state change requested by the timeline widget.
@@ -148,6 +211,64 @@ pub enum TimelineEvent {
 		edge: TrimEdge,
 		/// Requested new frame position of that edge.
 		new_frame: Frame,
+	},
+
+	/// The razor tool pressed inside a clip: split it at `time`.
+	///
+	/// `time` is guaranteed to lie strictly inside the clip's range (a press
+	/// on an edge bubbles to the clip area instead). The host must split the
+	/// clip into two — one undoable entry — and re-notify.
+	ClipSplitRequested {
+		/// The clip to split.
+		clip: ClipId,
+		/// The requested split frame (inside the clip).
+		time: Frame,
+	},
+
+	/// The ripple tool finished a trim: trim the clip and slide every later
+	/// clip on the track so no gap opens between the trimmed edge and its
+	/// follower. The host composes this as ONE undoable entry.
+	ClipRippleTrimRequested {
+		/// The trimmed clip.
+		clip: ClipId,
+		/// Which edge was grabbed.
+		edge: TrimEdge,
+		/// Requested new frame position of that edge (the ripple ripple point).
+		new_frame: Frame,
+	},
+
+	/// The roll tool dragged the boundary between two adjacent clips.
+	///
+	/// `clip_a` is the left clip, `clip_b` the right one, and `new_frame` is
+	/// the requested new boundary position (strictly between `clip_a`'s start
+	/// and `clip_b`'s end). The host extends `clip_a`'s out edge while
+	/// retracting `clip_b`'s in edge by the same delta — one undoable entry.
+	ClipRollRequested {
+		/// The left clip of the pair.
+		clip_a: ClipId,
+		/// The right clip of the pair.
+		clip_b: ClipId,
+		/// Requested new boundary frame.
+		new_frame: Frame,
+	},
+
+	/// The slide tool dragged a clip to a new position; the host moves it and
+	/// trims the neighbors to compensate — one undoable entry.
+	ClipSlideRequested {
+		/// The slid clip.
+		clip: ClipId,
+		/// Requested new start frame.
+		new_start: Frame,
+	},
+
+	/// The slip tool dragged a clip's content: `new_media_in` is the
+	/// requested source offset (in media frames) while the clip's range stays
+	/// put. The host updates only the media-in — one undoable entry.
+	ClipSlipRequested {
+		/// The slipped clip.
+		clip: ClipId,
+		/// Requested new media-in frame (>= 0).
+		new_media_in: Frame,
 	},
 
 	/// The playhead moved, by any means (ruler seek, keyboard, playback
@@ -294,6 +415,9 @@ pub struct TimelineView<D: TimelineDataSource> {
 	/// read access; mutate through [`TimelineState`]'s methods to preserve
 	/// invariants.
 	pub state: TimelineState,
+	/// The active editing tool; the view dispatches its gestures by it.
+	/// Set through [`TimelineView::set_tool`].
+	pub tool: TimelineTool,
 	/// The set of tracks selected via their headers.
 	selected_tracks: BTreeSet<usize>,
 	/// Rich clip content (thumbnails / waveforms), replaced by the host.
@@ -333,10 +457,24 @@ impl<D: TimelineDataSource> TimelineView<D> {
 		TimelineView {
 			source,
 			state: TimelineState::new(),
+			tool: TimelineTool::Select,
 			selected_tracks: BTreeSet::new(),
 			decorator: std::sync::Arc::new(std::sync::RwLock::new(NoopClipDecorator)),
 			focus_handle,
 			clip_area_origin: Point::default(),
+		}
+	}
+
+	/// The active editing tool.
+	pub fn tool(&self) -> TimelineTool {
+		self.tool
+	}
+
+	/// Sets the active editing tool, repainting if it changed.
+	pub fn set_tool(&mut self, tool: TimelineTool, cx: &mut Context<Self>) {
+		if self.tool != tool {
+			self.tool = tool;
+			cx.notify();
 		}
 	}
 
@@ -352,7 +490,10 @@ impl<D: TimelineDataSource> TimelineView<D> {
 
 	/// Replaces the clip decorator after construction (the app wires its
 	/// waveform cache once the engine is up).
-	pub fn set_clip_decorator(&mut self, decorator: std::sync::Arc<std::sync::RwLock<dyn ClipDecorator>>) {
+	pub fn set_clip_decorator(
+		&mut self,
+		decorator: std::sync::Arc<std::sync::RwLock<dyn ClipDecorator>>,
+	) {
 		self.decorator = decorator;
 	}
 
@@ -650,16 +791,161 @@ impl<D: TimelineDataSource> TimelineView<D> {
 		cx.notify();
 	}
 
-	/// Emits [`TimelineEvent::ClipTrimRequested`] for a finished trim.
+	/// Emits [`TimelineEvent::ClipTrimRequested`] (select tool) or
+	/// [`TimelineEvent::ClipRippleTrimRequested`] (ripple tool) for a finished
+	/// trim — the ripple variant also slides the track's later clips, which
+	/// the host composes as one undoable entry.
 	fn finish_trim_drag(&mut self, drag: &Arc<RwLock<TrimDrag>>, cx: &mut Context<Self>) {
 		let (clip, edge, original_frame, new_frame) = {
 			let drag = drag.read().expect("trim drag lock is not poisoned");
 			(drag.clip, drag.edge, drag.original_frame, drag.new_frame)
 		};
 		if new_frame != original_frame {
-			cx.emit(TimelineEvent::ClipTrimRequested {
-				clip,
-				edge,
+			if self.tool == TimelineTool::Ripple {
+				cx.emit(TimelineEvent::ClipRippleTrimRequested {
+					clip,
+					edge,
+					new_frame,
+				});
+			} else {
+				cx.emit(TimelineEvent::ClipTrimRequested {
+					clip,
+					edge,
+					new_frame,
+				});
+			}
+			cx.notify();
+		}
+	}
+
+	/// The horizontal drag distance converted to a frame delta at the current
+	/// zoom — the shared base of the slide, slip, and roll gestures.
+	fn drag_frame_delta(&self, press: Point<Pixels>, now: Point<Pixels>) -> i64 {
+		((now.x.0 - press.x.0) / self.state.zoom).round() as i64
+	}
+
+	/// Updates a slide drag from the pointer position: the clip's start shifts
+	/// by the mouse delta (snapped when snap is enabled) but never before frame
+	/// zero.
+	fn update_slide_drag(
+		&mut self,
+		event: &DragMoveEvent<Arc<RwLock<SlideDrag>>>,
+		cx: &mut Context<Self>,
+	) {
+		let drag = Arc::clone(event.drag(cx));
+		let press = cx
+			.active_drag
+			.as_ref()
+			.map(|drag| drag.cursor_offset)
+			.unwrap_or_default();
+		let now = event.event.position - event.bounds.origin;
+		let delta = self.drag_frame_delta(press, now);
+		let mut drag = drag.write().expect("slide drag lock is not poisoned");
+		let mut new_start = Frame(drag.original_start.0 + delta);
+		if self.state.snap_enabled {
+			if let Some(result) = snap(
+				new_start,
+				self.snap_points(Some(drag.clip), cx).into_iter(),
+				px(SNAP_THRESHOLD_PX),
+				self.state.zoom,
+			) {
+				new_start = result.frame;
+			}
+		}
+		drag.new_start = new_start.max(Frame::ZERO);
+		cx.notify();
+	}
+
+	/// Emits [`TimelineEvent::ClipSlideRequested`] for a finished slide unless
+	/// the clip didn't move.
+	fn finish_slide_drag(&mut self, drag: &Arc<RwLock<SlideDrag>>, cx: &mut Context<Self>) {
+		let (clip, original_start, new_start) = {
+			let drag = drag.read().expect("slide drag lock is not poisoned");
+			(drag.clip, drag.original_start, drag.new_start)
+		};
+		if new_start != original_start {
+			cx.emit(TimelineEvent::ClipSlideRequested { clip, new_start });
+			cx.notify();
+		}
+	}
+
+	/// Updates a slip drag from the pointer position: the media in-point moves
+	/// by the mouse delta, clamped to non-negative source frames.
+	fn update_slip_drag(
+		&mut self,
+		event: &DragMoveEvent<Arc<RwLock<SlipDrag>>>,
+		cx: &mut Context<Self>,
+	) {
+		let drag = Arc::clone(event.drag(cx));
+		let press = cx
+			.active_drag
+			.as_ref()
+			.map(|drag| drag.cursor_offset)
+			.unwrap_or_default();
+		let now = event.event.position - event.bounds.origin;
+		let delta = self.drag_frame_delta(press, now);
+		let mut drag = drag.write().expect("slip drag lock is not poisoned");
+		drag.new_media_in = Frame((drag.original_media_in.0 + delta).max(0));
+		cx.notify();
+	}
+
+	/// Emits [`TimelineEvent::ClipSlipRequested`] for a finished slip unless
+	/// the media in-point didn't move.
+	fn finish_slip_drag(&mut self, drag: &Arc<RwLock<SlipDrag>>, cx: &mut Context<Self>) {
+		let (clip, original_media_in, new_media_in) = {
+			let drag = drag.read().expect("slip drag lock is not poisoned");
+			(drag.clip, drag.original_media_in, drag.new_media_in)
+		};
+		if new_media_in != original_media_in {
+			cx.emit(TimelineEvent::ClipSlipRequested { clip, new_media_in });
+			cx.notify();
+		}
+	}
+
+	/// Updates a roll drag from the pointer position: the shared boundary moves
+	/// with the pointer, clamped to keep both clips non-empty (inside
+	/// `min + 1 .. max - 1`), then snapped and re-clamped.
+	fn update_roll_drag(
+		&mut self,
+		event: &DragMoveEvent<Arc<RwLock<RollDrag>>>,
+		cx: &mut Context<Self>,
+	) {
+		let drag = Arc::clone(event.drag(cx));
+		let press = cx
+			.active_drag
+			.as_ref()
+			.map(|drag| drag.cursor_offset)
+			.unwrap_or_default();
+		let now = event.event.position - event.bounds.origin;
+		let mut drag = drag.write().expect("roll drag lock is not poisoned");
+		let clamp = |frame: Frame| Frame(frame.0.clamp(drag.min.0 + 1, drag.max.0 - 1));
+		let handle_x = now.x.0 - press.x.0;
+		let mut new_frame = clamp(self.state.frame_at_point(px(handle_x)));
+		if self.state.snap_enabled {
+			if let Some(result) = snap(
+				new_frame,
+				self.snap_points(Some(drag.clip_a), cx).into_iter(),
+				px(SNAP_THRESHOLD_PX),
+				self.state.zoom,
+			) {
+				new_frame = clamp(result.frame);
+			}
+		}
+		drag.new_frame = new_frame;
+		cx.notify();
+	}
+
+	/// Emits [`TimelineEvent::ClipRollRequested`] for a finished roll unless
+	/// the boundary didn't move.
+	fn finish_roll_drag(&mut self, drag: &Arc<RwLock<RollDrag>>, cx: &mut Context<Self>) {
+		let (clip_a, clip_b, boundary, new_frame) = {
+			let drag = drag.read().expect("roll drag lock is not poisoned");
+			(drag.clip_a, drag.clip_b, drag.boundary, drag.new_frame)
+		};
+		if new_frame != boundary {
+			cx.emit(TimelineEvent::ClipRollRequested {
+				clip_a,
+				clip_b,
 				new_frame,
 			});
 			cx.notify();
@@ -787,7 +1073,13 @@ impl<D: TimelineDataSource> TimelineView<D> {
 		let seq_len = self.sequence_length(cx).0.max(1);
 		let frame = self.state.frame_at_point(now.x).0.clamp(0, seq_len);
 		let press_frame = self.state.frame_at_point(press.x).0.clamp(0, seq_len);
-		let band = reshape_work_area(drag.old_band, Frame(press_frame), Frame(frame), edge, seq_len);
+		let band = reshape_work_area(
+			drag.old_band,
+			Frame(press_frame),
+			Frame(frame),
+			edge,
+			seq_len,
+		);
 		self.state.work_area = Some(band);
 		drag.new_band = Some(band);
 		cx.emit(TimelineEvent::WorkAreaPreview {
@@ -876,6 +1168,9 @@ impl<D: TimelineDataSource> EventEmitter<TimelineEvent> for TimelineView<D> {}
 impl<D: TimelineDataSource> Render for TimelineView<D> {
 	fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
 		let state = self.state.clone();
+		// The active tool shapes which interactions are wired onto the clip
+		// area and the clip wrappers below.
+		let tool = self.tool;
 		let source = self.source.read(cx);
 		let frame_rate = source.frame_rate();
 		let seq_len = source.sequence_length();
@@ -906,6 +1201,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 							label: clip.label(),
 							color,
 							enabled: clip.is_enabled(),
+							media_in: clip.media_in(),
 							in_transition,
 							out_transition,
 						}
@@ -1055,10 +1351,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 							this.finish_ruler_drag(drag, cx);
 						}),
 					)
-					.child(
-						TimelineRuler::new(state.clone(), frame_rate, seq_len)
-							.markers(markers),
-					),
+					.child(TimelineRuler::new(state.clone(), frame_rate, seq_len).markers(markers)),
 			);
 
 		let headers = div()
@@ -1094,15 +1387,14 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 				// `TrackToggleRequested` edit requests (the view itself
 				// never mutates the model).
 				let view = cx.weak_entity();
-				let on_toggle: TrackToggleHandler =
-					Arc::new(move |track, toggle, _window, app| {
-						if let Some(view) = view.upgrade() {
-							view.update(app, |_this, cx| {
-								cx.emit(TimelineEvent::TrackToggleRequested { track, toggle });
-								cx.notify();
-							});
-						}
-					});
+				let on_toggle: TrackToggleHandler = Arc::new(move |track, toggle, _window, app| {
+					if let Some(view) = view.upgrade() {
+						view.update(app, |_this, cx| {
+							cx.emit(TimelineEvent::TrackToggleRequested { track, toggle });
+							cx.notify();
+						});
+					}
+				});
 				div()
 					.h(px(height))
 					.relative()
@@ -1176,7 +1468,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 		// `cx.listener`; they go through this weak handle instead.
 		let weak_view = cx.weak_entity();
 
-		let clip_area = div()
+		let mut clip_area = div()
 			.flex_1()
 			.h_full()
 			.id("timeline-clip-area")
@@ -1230,7 +1522,57 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 					});
 				}),
 			)
-			.on_drag(MarqueeDrag, drag_ghost)
+			// The zoom and track-select tools act directly on a clip-area
+			// press (a press on a clip bubbles here: the clip wrapper leaves
+			// non-select tools alone).
+			.on_mouse_down(
+				MouseButton::Left,
+				cx.listener(|this, event: &MouseDownEvent, _window, cx| {
+					let local = event.position - this.clip_area_origin;
+					match this.tool {
+						TimelineTool::Zoom => {
+							// Zoom in on the pointed frame; secondary (ctrl/cmd)
+							// zooms out instead. Anchored at the cursor, like
+							// ctrl-scroll.
+							let factor = if event.modifiers.secondary() {
+								0.8
+							} else {
+								1.25
+							};
+							let old = this.state.zoom;
+							this.state.set_zoom(old * factor, local.x);
+							if (this.state.zoom - old).abs() > f32::EPSILON {
+								cx.emit(TimelineEvent::ZoomChanged(this.state.zoom));
+							}
+							cx.notify();
+						}
+						TimelineTool::TrackSelect => {
+							// Select every clip under or to the right of the
+							// pointer on the pointed track; secondary selects
+							// the whole track.
+							let frame = this.state.frame_at_point(local.x);
+							let track = this.track_at_y(f32::from(local.y), cx);
+							let whole = event.modifiers.secondary();
+							let ids: Vec<ClipId> = this
+								.source
+								.read(cx)
+								.track(track)
+								.map(|t| {
+									t.clips()
+										.iter()
+										.filter(|clip| whole || clip.range().end.0 > frame.0)
+										.map(|clip| clip.id())
+										.collect()
+								})
+								.unwrap_or_default();
+							this.state.select_range(ids);
+							cx.emit(TimelineEvent::SelectionChanged);
+							cx.notify();
+						}
+						_ => {}
+					}
+				}),
+			)
 			.on_drag_move(cx.listener(
 				|this, event: &DragMoveEvent<Arc<RwLock<ClipDrag>>>, _window, cx| {
 					this.update_clip_drag(event, cx);
@@ -1241,13 +1583,21 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 					this.update_trim_drag(event, cx);
 				},
 			))
-			.on_drag_move({
-				cx.listener(
-					move |this, event: &DragMoveEvent<MarqueeDrag>, _window, cx| {
-						this.update_marquee(event, marquee_rows.as_slice(), cx);
-					},
-				)
-			})
+			.on_drag_move(cx.listener(
+				|this, event: &DragMoveEvent<Arc<RwLock<SlideDrag>>>, _window, cx| {
+					this.update_slide_drag(event, cx);
+				},
+			))
+			.on_drag_move(cx.listener(
+				|this, event: &DragMoveEvent<Arc<RwLock<SlipDrag>>>, _window, cx| {
+					this.update_slip_drag(event, cx);
+				},
+			))
+			.on_drag_move(cx.listener(
+				|this, event: &DragMoveEvent<Arc<RwLock<RollDrag>>>, _window, cx| {
+					this.update_roll_drag(event, cx);
+				},
+			))
 			.on_drop(
 				cx.listener(|this, drag: &Arc<RwLock<ClipDrag>>, _window, cx| {
 					this.finish_clip_drag(drag, cx);
@@ -1258,9 +1608,21 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 					this.finish_trim_drag(drag, cx);
 				}),
 			)
-			.on_drop(cx.listener(|this, _drag: &MarqueeDrag, _window, cx| {
-				this.finish_marquee(cx);
-			}))
+			.on_drop(
+				cx.listener(|this, drag: &Arc<RwLock<SlideDrag>>, _window, cx| {
+					this.finish_slide_drag(drag, cx);
+				}),
+			)
+			.on_drop(
+				cx.listener(|this, drag: &Arc<RwLock<SlipDrag>>, _window, cx| {
+					this.finish_slip_drag(drag, cx);
+				}),
+			)
+			.on_drop(
+				cx.listener(|this, drag: &Arc<RwLock<RollDrag>>, _window, cx| {
+					this.finish_roll_drag(drag, cx);
+				}),
+			)
 			.on_drop(
 				cx.listener(|this, drag: &Arc<RwLock<HeightDrag>>, _window, cx| {
 					this.finish_height_drag(drag, cx);
@@ -1278,244 +1640,361 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 				)
 				.absolute()
 				.size_full(),
-			)
-			.children(rows.into_iter().map(move |row| {
-				let height = row.height;
-				let row_locked = row.locked;
-				let kind = row.kind;
-				let row_index = row.index;
-				let state = &state;
-				let decorator = &decorator;
-				// Per-row clone: the per-clip closures below are built once
-				// per row and move this handle in.
-				let weak_view = weak_view.clone();
-				div()
-					.h(px(height))
-					.relative()
-					.children(row.clips.into_iter().map(move |clip| {
-						let x0 = state.point_at_frame(clip.range.start).0;
-						let x1 = state.point_at_frame(clip.range.end).0;
-						let width = (x1 - x0).max(1.0);
-						let clip_height = (height - TrackHeader::SEPARATOR_HEIGHT).max(1.0);
-						let mut children: Vec<AnyElement> = vec![
-							ClipElement::new(
-								clip.id,
-								clip.label.clone(),
-								clip.color,
-								clip.in_transition,
-								clip.out_transition,
-								decorator.clone(),
-							)
-							.selected(state.is_selected(clip.id))
-							.enabled(clip.enabled)
-							.locked(row_locked)
-							.content(match kind {
-								TrackKind::Video => ClipContent::Thumbnails,
-								TrackKind::Audio => ClipContent::Waveform,
-								TrackKind::Subtitle => ClipContent::None,
-							})
-							.into_any_element(),
-						];
-						if !row_locked {
-							children.push(
-								div()
-									.absolute()
-									.left(px(0.))
-									.top(px(0.))
-									.bottom(px(0.))
-									.w(px(TRIM_HANDLE_WIDTH))
-									.id(ElementId::named_usize(
-										"timeline-trim-start",
-										clip.id.0 as usize,
-									))
-									.cursor_ew_resize()
-									.on_drag(
-										Arc::new(RwLock::new(TrimDrag {
-											clip: clip.id,
-											edge: TrimEdge::Start,
-											original_frame: clip.range.start,
-											new_frame: clip.range.start,
-										})),
-										drag_ghost,
-									)
-									.into_any_element(),
-							);
-							children.push(
-								div()
-									.absolute()
-									.right(px(0.))
-									.top(px(0.))
-									.bottom(px(0.))
-									.w(px(TRIM_HANDLE_WIDTH))
-									.id(ElementId::named_usize(
-										"timeline-trim-end",
-										clip.id.0 as usize,
-									))
-									.cursor_ew_resize()
-									.on_drag(
-										Arc::new(RwLock::new(TrimDrag {
-											clip: clip.id,
-											edge: TrimEdge::End,
-											original_frame: clip.range.end,
-											new_frame: clip.range.end,
-										})),
-										drag_ghost,
-									)
-									.into_any_element(),
-							);
-						}
-
-						// Transition-resize handles sit at the wedges' edges.
-						if let Some(transition) = clip.in_transition {
-							children.push(
-								div()
-									.absolute()
-									.left(px(0.))
-									.top(px(0.))
-									.bottom(px(0.))
-									.w(px(TRIM_HANDLE_WIDTH))
-									.id(ElementId::named_usize(
-										"timeline-transition-handle",
-										clip.id.0 as usize,
-									))
-									.cursor_ew_resize()
-									.on_drag(
-										Arc::new(RwLock::new(TransitionDrag {
-											clip: clip.id,
-											edge: TrimEdge::Start,
-											original_length: transition.end,
-											new_length: transition.end,
-										})),
-										drag_ghost,
-									)
-									.into_any_element(),
-							);
-						}
-						if let Some(transition) = clip.out_transition {
-							children.push(
-								div()
-									.absolute()
-									.right(px(0.))
-									.top(px(0.))
-									.bottom(px(0.))
-									.w(px(TRIM_HANDLE_WIDTH))
-									.id(ElementId::named_usize(
-										"timeline-transition-handle",
-										clip.id.0 as usize,
-									))
-									.cursor_ew_resize()
-									.on_drag(
-										Arc::new(RwLock::new(TransitionDrag {
-											clip: clip.id,
-											edge: TrimEdge::End,
-											original_length: transition.end,
-											new_length: transition.end,
-										})),
-										drag_ghost,
-									)
-									.into_any_element(),
-							);
-						}
-						div()
-							.absolute()
-							.left(px(x0))
-							// Slight vertical inset: the design's clips read
-							// as rounded bars with a small gap between rows,
-							// not full-height slabs. The corners are rounded
-							// in ClipElement's painted quads (content masks
-							// are rectangular only).
-							.top(px(2.))
-							.w(px(width))
-							.h(px((clip_height - 4.0).max(1.0)))
-							.overflow_hidden()
-							.id(ElementId::named_usize("timeline-clip", clip.id.0 as usize))
-							.on_mouse_down(
-								MouseButton::Left,
-								{
-									let view = weak_view.clone();
-									let id = clip.id;
-									move |event: &MouseDownEvent, _window, cx| {
-										if let Some(view) = view.upgrade() {
-											view.update(cx, |this, cx| {
-												// NLE selection on press: a plain
-												// press on an unselected clip
-												// selects just it; a press on an
-												// already-selected clip keeps the
-												// multi-selection (group drags
-												// work); Ctrl/Cmd toggles
-												// membership.
-												let changed = if event
-													.modifiers
-													.secondary()
-												{
-													!this.state.selection.remove(&id)
-														&& {
-															this.state.selection.insert(id);
-															true
-														}
-												} else if !this.state.selection.contains(&id) {
-													this.state.selection.clear();
-													this.state.selection.insert(id)
-												} else {
-													false
-												};
-												if changed {
-													cx.emit(TimelineEvent::SelectionChanged);
-													cx.notify();
-												}
-											});
-										}
-									}
-								},
-							)
-							.on_mouse_down(
-								MouseButton::Right,
-								{
-									let view = weak_view.clone();
-									let id = clip.id;
-									move |event: &MouseDownEvent, _window, cx| {
-										if let Some(view) = view.upgrade() {
-											view.update(cx, |_this, cx| {
-												cx.emit(TimelineEvent::ContextMenuRequested {
-													position: event.position,
-													hit: TimelineHit::Clip(id),
-												});
-												cx.stop_propagation();
-											});
-										}
-									}
-								},
-							)
-							.on_drag(
-								Arc::new(RwLock::new(ClipDrag {
-									clip: clip.id,
-									original_start: clip.range.start,
-									original_track: row_index,
-									new_start: clip.range.start,
-									new_track: row_index,
-									original_length: clip.range.len(),
-								})),
-								drag_ghost,
-							)
-							.children(children)
-					}))
-			}))
-			// The clip-move ghost overlays the rows (an absolute child of the
-			// clip area; an empty div when no clip drag is active).
-			.child(clip_ghost_element)
-			// The playhead lives INSIDE the clip area (clip-area-local x): it
-			// is clipped by the area's left edge when scrolled off-screen
-			// instead of painting over the track-headers column, and stays on
-			// top of the clips.
-			.child(
-				div()
-					.absolute()
-					.left(px(playhead_x))
-					.top(px(0.))
-					.bottom(px(0.))
-					.w(px(1.))
-					.child(PlayheadElement::new(px(0.), playhead_color())),
 			);
+		// The marquee (rubber-band) selection only exists on the select
+		// tool; the razor and zoom tools swap the area cursor to a
+		// crosshair instead.
+		if tool == TimelineTool::Select {
+			clip_area = clip_area
+				.on_drag(MarqueeDrag, drag_ghost)
+				.on_drag_move({
+					cx.listener(
+						move |this, event: &DragMoveEvent<MarqueeDrag>, _window, cx| {
+							this.update_marquee(event, marquee_rows.as_slice(), cx);
+						},
+					)
+				})
+				.on_drop(cx.listener(|this, _drag: &MarqueeDrag, _window, cx| {
+					this.finish_marquee(cx);
+				}));
+		}
+		if tool == TimelineTool::Razor || tool == TimelineTool::Zoom {
+			clip_area = clip_area.cursor_crosshair();
+		}
+		let clip_area =
+			clip_area
+				.children(rows.into_iter().map(move |row| {
+					let height = row.height;
+					let row_locked = row.locked;
+					let kind = row.kind;
+					let row_index = row.index;
+					let state = &state;
+					let decorator = &decorator;
+					// Per-row clone: the per-clip closures below are built once
+					// per row and move this handle in.
+					let weak_view = weak_view.clone();
+					// Roll edits reshape the shared boundary between adjacent
+					// clips: precompute each boundary's partners so the per-clip
+					// closure can attach a roll handle to the left clip of each
+					// adjacent pair.
+					let roll_info: Vec<Option<RollPair>> = (0..row.clips.len())
+						.map(|i| roll_pair(&row.clips, i))
+						.collect();
+					div()
+						.h(px(height))
+						.relative()
+						.children(row.clips.into_iter().enumerate().map(
+							move |(clip_index, clip)| {
+								let x0 = state.point_at_frame(clip.range.start).0;
+								let x1 = state.point_at_frame(clip.range.end).0;
+								let width = (x1 - x0).max(1.0);
+								let clip_height = (height - TrackHeader::SEPARATOR_HEIGHT).max(1.0);
+								let mut children: Vec<AnyElement> = vec![ClipElement::new(
+									clip.id,
+									clip.label.clone(),
+									clip.color,
+									clip.in_transition,
+									clip.out_transition,
+									decorator.clone(),
+								)
+								.selected(state.is_selected(clip.id))
+								.enabled(clip.enabled)
+								.locked(row_locked)
+								.content(match kind {
+									TrackKind::Video => ClipContent::Thumbnails,
+									TrackKind::Audio => ClipContent::Waveform,
+									TrackKind::Subtitle => ClipContent::None,
+								})
+								.into_any_element()];
+								if !row_locked
+									&& (tool == TimelineTool::Select
+										|| tool == TimelineTool::Ripple)
+								{
+									children.push(
+										div()
+											.absolute()
+											.left(px(0.))
+											.top(px(0.))
+											.bottom(px(0.))
+											.w(px(TRIM_HANDLE_WIDTH))
+											.id(ElementId::named_usize(
+												"timeline-trim-start",
+												clip.id.0 as usize,
+											))
+											.cursor_ew_resize()
+											.on_drag(
+												Arc::new(RwLock::new(TrimDrag {
+													clip: clip.id,
+													edge: TrimEdge::Start,
+													original_frame: clip.range.start,
+													new_frame: clip.range.start,
+												})),
+												drag_ghost,
+											)
+											.into_any_element(),
+									);
+									children.push(
+										div()
+											.absolute()
+											.right(px(0.))
+											.top(px(0.))
+											.bottom(px(0.))
+											.w(px(TRIM_HANDLE_WIDTH))
+											.id(ElementId::named_usize(
+												"timeline-trim-end",
+												clip.id.0 as usize,
+											))
+											.cursor_ew_resize()
+											.on_drag(
+												Arc::new(RwLock::new(TrimDrag {
+													clip: clip.id,
+													edge: TrimEdge::End,
+													original_frame: clip.range.end,
+													new_frame: clip.range.end,
+												})),
+												drag_ghost,
+											)
+											.into_any_element(),
+									);
+								}
+
+								// The roll tool draws a handle on the right edge of the
+								// left clip of each adjacent pair; dragging it reshapes
+								// the shared boundary.
+								if tool == TimelineTool::Roll {
+									if let Some(pair) = roll_info[clip_index] {
+										children.push(
+											div()
+												.absolute()
+												.right(px(0.))
+												.top(px(0.))
+												.bottom(px(0.))
+												.w(px(TRIM_HANDLE_WIDTH))
+												.id(ElementId::named_usize(
+													"timeline-roll-handle",
+													clip.id.0 as usize,
+												))
+												.cursor_ew_resize()
+												.on_drag(
+													Arc::new(RwLock::new(RollDrag {
+														clip_a: pair.a,
+														clip_b: pair.b,
+														boundary: pair.boundary,
+														new_frame: pair.boundary,
+														min: pair.min,
+														max: pair.max,
+													})),
+													drag_ghost,
+												)
+												.into_any_element(),
+										);
+									}
+								}
+
+								// Transition-resize handles sit at the wedges' edges,
+								// select tool only (they are selection affordances, not
+								// trim handles).
+								if tool == TimelineTool::Select {
+									if let Some(transition) = clip.in_transition {
+										children.push(
+											div()
+												.absolute()
+												.left(px(0.))
+												.top(px(0.))
+												.bottom(px(0.))
+												.w(px(TRIM_HANDLE_WIDTH))
+												.id(ElementId::named_usize(
+													"timeline-transition-handle",
+													clip.id.0 as usize,
+												))
+												.cursor_ew_resize()
+												.on_drag(
+													Arc::new(RwLock::new(TransitionDrag {
+														clip: clip.id,
+														edge: TrimEdge::Start,
+														original_length: transition.end,
+														new_length: transition.end,
+													})),
+													drag_ghost,
+												)
+												.into_any_element(),
+										);
+									}
+									if let Some(transition) = clip.out_transition {
+										children.push(
+											div()
+												.absolute()
+												.right(px(0.))
+												.top(px(0.))
+												.bottom(px(0.))
+												.w(px(TRIM_HANDLE_WIDTH))
+												.id(ElementId::named_usize(
+													"timeline-transition-handle",
+													clip.id.0 as usize,
+												))
+												.cursor_ew_resize()
+												.on_drag(
+													Arc::new(RwLock::new(TransitionDrag {
+														clip: clip.id,
+														edge: TrimEdge::End,
+														original_length: transition.end,
+														new_length: transition.end,
+													})),
+													drag_ghost,
+												)
+												.into_any_element(),
+										);
+									}
+								}
+								let mut wrapper = div()
+									.absolute()
+									.left(px(x0))
+									// Slight vertical inset: the design's clips read
+									// as rounded bars with a small gap between rows,
+									// not full-height slabs. The corners are rounded
+									// in ClipElement's painted quads (content masks
+									// are rectangular only).
+									.top(px(2.))
+									.w(px(width))
+									.h(px((clip_height - 4.0).max(1.0)))
+									.overflow_hidden()
+									.id(ElementId::named_usize("timeline-clip", clip.id.0 as usize))
+									.on_mouse_down(MouseButton::Left, {
+										let view = weak_view.clone();
+										let id = clip.id;
+										move |event: &MouseDownEvent, _window, cx| {
+											if let Some(view) = view.upgrade() {
+												view.update(cx, |this, cx| {
+													// A press means different things per tool: select runs the
+													// NLE selection logic, razor splits the clip at the pointer.
+													// Zoom and track-select leave the press to the clip area; the
+													// other tools act on their own handles.
+													match this.tool {
+														TimelineTool::Select => {
+															// NLE selection on press: a plain press on an unselected
+															// clip selects just it; a press on an already-selected clip
+															// keeps the multi-selection (group drags work); Ctrl/Cmd
+															// toggles membership.
+															let changed = if event
+																.modifiers
+																.secondary()
+															{
+																!this.state.selection.remove(&id)
+																	&& {
+																		this.state
+																			.selection
+																			.insert(id);
+																		true
+																	}
+															} else if !this
+																.state
+																.selection
+																.contains(&id)
+															{
+																this.state.selection.clear();
+																this.state.selection.insert(id)
+															} else {
+																false
+															};
+															if changed {
+																cx.emit(
+																	TimelineEvent::SelectionChanged,
+																);
+																cx.notify();
+															}
+														}
+														TimelineTool::Razor => {
+															// Split the clip at the clicked frame (only inside the clip;
+															// the edges are trim territory).
+															let local = event.position
+																- this.clip_area_origin;
+															let frame =
+																this.state.frame_at_point(local.x);
+															let range = this.clip_range(id, cx);
+															if frame.0 > range.start.0
+																&& frame.0 < range.end.0
+															{
+																cx.emit(TimelineEvent::ClipSplitRequested { clip: id, time: frame });
+																cx.notify();
+															}
+														}
+														_ => {}
+													}
+												});
+											}
+										}
+									})
+									.on_mouse_down(MouseButton::Right, {
+										let view = weak_view.clone();
+										let id = clip.id;
+										move |event: &MouseDownEvent, _window, cx| {
+											if let Some(view) = view.upgrade() {
+												view.update(cx, |_this, cx| {
+													cx.emit(TimelineEvent::ContextMenuRequested {
+														position: event.position,
+														hit: TimelineHit::Clip(id),
+													});
+													cx.stop_propagation();
+												});
+											}
+										}
+									});
+								match tool {
+									TimelineTool::Select => {
+										wrapper = wrapper.on_drag(
+											Arc::new(RwLock::new(ClipDrag {
+												clip: clip.id,
+												original_start: clip.range.start,
+												original_track: row_index,
+												new_start: clip.range.start,
+												new_track: row_index,
+												original_length: clip.range.len(),
+											})),
+											drag_ghost,
+										);
+									}
+									TimelineTool::Slide => {
+										wrapper = wrapper.on_drag(
+											Arc::new(RwLock::new(SlideDrag {
+												clip: clip.id,
+												original_start: clip.range.start,
+												new_start: clip.range.start,
+											})),
+											drag_ghost,
+										);
+									}
+									TimelineTool::Slip => {
+										wrapper = wrapper.on_drag(
+											Arc::new(RwLock::new(SlipDrag {
+												clip: clip.id,
+												original_media_in: clip.media_in,
+												new_media_in: clip.media_in,
+											})),
+											drag_ghost,
+										);
+									}
+									_ => {}
+								}
+								wrapper.children(children)
+							},
+						))
+				}))
+				// The clip-move ghost overlays the rows (an absolute child of the
+				// clip area; an empty div when no clip drag is active).
+				.child(clip_ghost_element)
+				// The playhead lives INSIDE the clip area (clip-area-local x): it
+				// is clipped by the area's left edge when scrolled off-screen
+				// instead of painting over the track-headers column, and stays on
+				// top of the clips.
+				.child(
+					div()
+						.absolute()
+						.left(px(playhead_x))
+						.top(px(0.))
+						.bottom(px(0.))
+						.w(px(1.))
+						.child(PlayheadElement::new(px(0.), playhead_color())),
+				);
 
 		div().size_full().flex().flex_col().child(ruler).child(
 			div()
@@ -1576,6 +2055,49 @@ struct TrimDrag {
 	new_frame: Frame,
 }
 
+/// Shared state for a clip-slide gesture: the clip keeps its media offsets
+/// while its start (and with it the whole range) shifts by the horizontal
+/// mouse delta; the host recomposes the neighboring clips as one undo entry.
+struct SlideDrag {
+	clip: ClipId,
+	original_start: Frame,
+	new_start: Frame,
+}
+
+/// Shared state for a clip-slip gesture: the clip's range stays fixed while
+/// its media in-point slides under the pointer, revealing different source
+/// frames.
+struct SlipDrag {
+	clip: ClipId,
+	original_media_in: Frame,
+	new_media_in: Frame,
+}
+
+/// Shared state for a roll gesture: the shared boundary between two adjacent
+/// clips moves, extending the left clip's out edge while the right clip's in
+/// edge retracts by the same amount (the pair's total length is preserved).
+struct RollDrag {
+	clip_a: ClipId,
+	clip_b: ClipId,
+	boundary: Frame,
+	new_frame: Frame,
+	/// The left clip's start — the boundary's exclusive lower bound.
+	min: Frame,
+	/// The right clip's end — the boundary's exclusive upper bound.
+	max: Frame,
+}
+
+/// The two clips sharing a boundary and the boundary's legal range — the
+/// precomputed input a roll handle is built from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RollPair {
+	a: ClipId,
+	b: ClipId,
+	boundary: Frame,
+	min: Frame,
+	max: Frame,
+}
+
 /// In-flight payload of a transition-resize drag.
 struct TransitionDrag {
 	clip: ClipId,
@@ -1619,6 +2141,7 @@ struct ClipRenderData {
 	label: SharedString,
 	color: Hsla,
 	enabled: bool,
+	media_in: Frame,
 	in_transition: Option<FrameRange>,
 	out_transition: Option<FrameRange>,
 }
@@ -1685,6 +2208,42 @@ fn clip_ghost_rect(
 	}
 }
 
+/// Resolves the roll handle for clip `index` in a row: `Some` only when the
+/// next clip starts exactly where this one ends, with the pair's legal
+/// boundary range (`min` = the left clip's start, `max` = the right clip's
+/// end).
+///
+/// Pure — the adjacency test is unit-tested directly.
+fn roll_pair(clips: &[ClipRenderData], index: usize) -> Option<RollPair> {
+	let a = clips.get(index)?;
+	let b = clips.get(index + 1)?;
+	if b.range.start != a.range.end {
+		return None;
+	}
+	Some(RollPair {
+		a: a.id,
+		b: b.id,
+		boundary: a.range.end,
+		min: a.range.start,
+		max: b.range.end,
+	})
+}
+
+/// The clips a track-select press picks: everything at or right of the clicked
+/// frame (`end > frame`), mirroring the pointer's "from here onward"
+/// semantics.
+///
+/// Only used by tests — the live press reads the source's trait objects
+/// directly instead.
+#[cfg(test)]
+fn track_select_clips(clips: &[ClipRenderData], frame: Frame) -> Vec<ClipId> {
+	clips
+		.iter()
+		.filter(|clip| clip.range.end.0 > frame.0)
+		.map(|clip| clip.id)
+		.collect()
+}
+
 /// The ghost rendered under the cursor during any timeline drag.
 struct DragPreview;
 
@@ -1731,10 +2290,7 @@ fn reshape_work_area(
 		EdgeKind::Out => band.end = Frame(current_frame.0.max(band.start.0 + 1)),
 		EdgeKind::Whole => {
 			band = if press_frame.0 <= current_frame.0 {
-				FrameRange::new(
-					press_frame,
-					Frame(current_frame.0.max(press_frame.0 + 1)),
-				)
+				FrameRange::new(press_frame, Frame(current_frame.0.max(press_frame.0 + 1)))
 			} else {
 				FrameRange::new(current_frame, Frame(press_frame.0.max(current_frame.0 + 1)))
 			};
@@ -1773,10 +2329,22 @@ mod tests {
 	#[test]
 	fn reshape_work_area_whole_replaces_or_creates_the_band() {
 		// Forward drag: press-to-cursor range.
-		let reshaped = reshape_work_area(Some(FrameRange::new(Frame(0), Frame(10))), Frame(30), Frame(70), EdgeKind::Whole, 1000);
+		let reshaped = reshape_work_area(
+			Some(FrameRange::new(Frame(0), Frame(10))),
+			Frame(30),
+			Frame(70),
+			EdgeKind::Whole,
+			1000,
+		);
 		assert_eq!(reshaped, FrameRange::new(Frame(30), Frame(70)));
 		// Backward drag: the range is normalized (start <= end).
-		let reshaped = reshape_work_area(Some(FrameRange::new(Frame(0), Frame(10))), Frame(70), Frame(30), EdgeKind::Whole, 1000);
+		let reshaped = reshape_work_area(
+			Some(FrameRange::new(Frame(0), Frame(10))),
+			Frame(70),
+			Frame(30),
+			EdgeKind::Whole,
+			1000,
+		);
 		assert_eq!(reshaped, FrameRange::new(Frame(30), Frame(70)));
 		// Creating a band from nothing uses the virtual 0..length band as the
 		// base for edge moves.
@@ -1844,6 +2412,70 @@ mod tests {
 		let rows = vec![ghost_row(0, 48.0)];
 		let rect = clip_ghost_rect(Frame(0), 0, Frame(1), 0.01, px(0.0), &rows);
 		assert_eq!(rect.width, px(4.0));
+	}
+
+	/// A minimal clip snapshot for the roll/track-select math.
+	fn clip_snapshot(id: u64, start: i64, end: i64) -> ClipRenderData {
+		ClipRenderData {
+			id: ClipId(id),
+			range: FrameRange::new(Frame(start), Frame(end)),
+			label: "clip".into(),
+			color: hsla(0.4, 0.5, 0.5, 1.0),
+			enabled: true,
+			media_in: Frame::ZERO,
+			in_transition: None,
+			out_transition: None,
+		}
+	}
+
+	#[test]
+	fn timeline_tool_index_roundtrips() {
+		for (index, tool) in TimelineTool::ALL.iter().enumerate() {
+			assert_eq!(tool.index(), index, "{tool:?} sits at toolbar slot {index}");
+			assert_eq!(TimelineTool::from_index(index), Some(*tool));
+		}
+		assert_eq!(TimelineTool::from_index(TimelineTool::ALL.len()), None);
+	}
+
+	#[test]
+	fn roll_pair_detects_adjacent_clips() {
+		// Back-to-back clips share a boundary; the pair's legal range is the
+		// left clip's start .. the right clip's end.
+		let clips = vec![clip_snapshot(0, 0, 10), clip_snapshot(1, 10, 20)];
+		let pair = roll_pair(&clips, 0).expect("adjacent clips form a pair");
+		assert_eq!(
+			pair,
+			RollPair {
+				a: ClipId(0),
+				b: ClipId(1),
+				boundary: Frame(10),
+				min: Frame(0),
+				max: Frame(20),
+			}
+		);
+		// The right clip of a pair has no following partner.
+		assert_eq!(roll_pair(&clips, 1), None);
+		// A gap (or overlap) between clips breaks the pair.
+		let gapped = vec![clip_snapshot(0, 0, 10), clip_snapshot(1, 15, 25)];
+		assert_eq!(roll_pair(&gapped, 0), None);
+	}
+
+	#[test]
+	fn track_select_clips_picks_under_and_right() {
+		let clips = vec![clip_snapshot(0, 0, 10), clip_snapshot(1, 12, 30)];
+		// Clicking inside clip 0 picks clip 0 and everything after it.
+		assert_eq!(
+			track_select_clips(&clips, Frame(5)),
+			vec![ClipId(0), ClipId(1)]
+		);
+		// Clicking in the gap between clips picks only the clips right of the
+		// pointer.
+		assert_eq!(track_select_clips(&clips, Frame(11)), vec![ClipId(1)]);
+		// Clicking at the very start of the sequence picks the whole track.
+		assert_eq!(
+			track_select_clips(&clips, Frame(0)),
+			vec![ClipId(0), ClipId(1)]
+		);
 	}
 
 	/// A minimal data source for the interaction tests: one video track, no
@@ -1929,7 +2561,7 @@ mod tests {
 	/// track selection).
 	#[test]
 	fn track_toggle_click_emits_request() {
-		use crate::{Modifiers, TestAppContext, VisualTestContext, size};
+		use crate::{size, Modifiers, TestAppContext, VisualTestContext};
 		use std::ops::Deref;
 
 		let mut test_app = TestAppContext::single();
@@ -1972,7 +2604,9 @@ mod tests {
 			"the lock toggle click emitted its request, got {events:?}"
 		);
 		assert!(
-			!events.iter().any(|e| matches!(e, TimelineEvent::TrackSelected { .. })),
+			!events
+				.iter()
+				.any(|e| matches!(e, TimelineEvent::TrackSelected { .. })),
 			"the toggle click must not bubble into a track selection"
 		);
 	}
