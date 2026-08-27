@@ -114,6 +114,44 @@ struct PathRasterizationVertex {
 	bounds: Bounds<ScaledPixels>,
 }
 
+/// The swapchain formats to try, in preference order, for a surface.
+///
+/// Defaults to 10-bit (RGB10A2, then the HDR RGBA16F, then the 8-bit
+/// pair) so a surface that supports neither 10-bit format degrades to
+/// 8-bit. oak surfaces its preferences-dialog bit-depth choice through
+/// the `OAK_DISPLAY_BIT_DEPTH` env var ("8" opts into the 8-bit pair)
+/// before the first window is created; non-oak gpui users simply get
+/// the 10-bit default.
+fn preferred_surface_formats() -> &'static [wgpu::TextureFormat] {
+	match std::env::var("OAK_DISPLAY_BIT_DEPTH").as_deref() {
+		Ok("8") => &[
+			wgpu::TextureFormat::Bgra8Unorm,
+			wgpu::TextureFormat::Rgba8Unorm,
+		],
+		_ => &[
+			wgpu::TextureFormat::Rgb10a2Unorm,
+			wgpu::TextureFormat::Rgba16Float,
+			wgpu::TextureFormat::Bgra8Unorm,
+			wgpu::TextureFormat::Rgba8Unorm,
+		],
+	}
+}
+
+/// Picks the swapchain format for a surface: the first preferred format
+/// the surface supports, falling back to the first non-sRGB format the
+/// surface offers, then to whatever it offers first.
+fn select_surface_format(
+	preferred: &[wgpu::TextureFormat],
+	supported: &[wgpu::TextureFormat],
+) -> Option<wgpu::TextureFormat> {
+	preferred
+		.iter()
+		.find(|f| supported.contains(f))
+		.copied()
+		.or_else(|| supported.iter().find(|f| !f.is_srgb()).copied())
+		.or_else(|| supported.first().copied())
+}
+
 pub struct WgpuSurfaceConfig {
 	pub size: Size<DevicePixels>,
 	pub transparent: bool,
@@ -376,16 +414,7 @@ impl WgpuRenderer {
 		atlas: Arc<WgpuAtlas>,
 	) -> anyhow::Result<Self> {
 		let surface_caps = surface.get_capabilities(&context.adapter);
-		let preferred_formats = [
-			wgpu::TextureFormat::Bgra8Unorm,
-			wgpu::TextureFormat::Rgba8Unorm,
-		];
-		let surface_format = preferred_formats
-			.iter()
-			.find(|f| surface_caps.formats.contains(f))
-			.copied()
-			.or_else(|| surface_caps.formats.iter().find(|f| !f.is_srgb()).copied())
-			.or_else(|| surface_caps.formats.first().copied())
+		let surface_format = select_surface_format(preferred_surface_formats(), &surface_caps.formats)
 			.ok_or_else(|| {
 				anyhow::anyhow!(
 					"Surface reports no supported texture formats for adapter {:?}",
@@ -2669,5 +2698,75 @@ impl RenderingParameters {
 			grayscale_enhanced_contrast,
 			subpixel_enhanced_contrast,
 		}
+	}
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+	use super::*;
+	use wgpu::TextureFormat as F;
+
+	#[test]
+	fn picks_first_supported_preferred_format() {
+		assert_eq!(
+			select_surface_format(&[F::Rgb10a2Unorm, F::Rgba16Float], &[F::Rgba16Float]),
+			Some(F::Rgba16Float)
+		);
+		assert_eq!(
+			select_surface_format(
+				&[F::Rgb10a2Unorm, F::Rgba16Float, F::Bgra8Unorm],
+				&[F::Rgb10a2Unorm, F::Rgba16Float, F::Bgra8Unorm],
+			),
+			Some(F::Rgb10a2Unorm)
+		);
+	}
+
+	#[test]
+	fn ten_bit_preference_degrades_through_float_then_eight_bit() {
+		// No 10-bit format supported → the HDR float fallback.
+		assert_eq!(
+			select_surface_format(&[F::Rgb10a2Unorm, F::Rgba16Float], &[F::Rgba16Float, F::Bgra8Unorm]),
+			Some(F::Rgba16Float)
+		);
+		// Neither 10-bit format supported → the 8-bit pair.
+		assert_eq!(
+			select_surface_format(
+				&[F::Rgb10a2Unorm, F::Rgba16Float, F::Bgra8Unorm, F::Rgba8Unorm],
+				&[F::Rgba8Unorm, F::Bgra8Unorm],
+			),
+			Some(F::Bgra8Unorm)
+		);
+	}
+
+	#[test]
+	fn falls_back_beyond_the_preference_list() {
+		// No preferred format at all → first non-sRGB format the surface offers.
+		assert_eq!(
+			select_surface_format(&[F::Rgb10a2Unorm], &[F::Bgra8UnormSrgb, F::Bgra8Unorm]),
+			Some(F::Bgra8Unorm)
+		);
+		// Only sRGB formats → whatever the surface offers first.
+		assert_eq!(
+			select_surface_format(&[F::Rgb10a2Unorm], &[F::Bgra8UnormSrgb, F::Rgba8UnormSrgb]),
+			Some(F::Bgra8UnormSrgb)
+		);
+		// No formats at all → None.
+		assert_eq!(select_surface_format(&[F::Rgb10a2Unorm], &[]), None);
+	}
+
+	#[test]
+	fn env_var_selects_the_bit_depth_preference() {
+		// SAFETY: single-threaded test; the variable is unset at the end.
+		unsafe { std::env::set_var("OAK_DISPLAY_BIT_DEPTH", "8") };
+		assert_eq!(
+			preferred_surface_formats(),
+			&[F::Bgra8Unorm, F::Rgba8Unorm]
+		);
+		unsafe { std::env::remove_var("OAK_DISPLAY_BIT_DEPTH") };
+		// Unset (or unknown) → the 10-bit default with the 8-bit tail.
+		assert_eq!(
+			preferred_surface_formats(),
+			&[F::Rgb10a2Unorm, F::Rgba16Float, F::Bgra8Unorm, F::Rgba8Unorm]
+		);
 	}
 }
