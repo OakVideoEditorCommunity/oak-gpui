@@ -14,16 +14,98 @@ pub use transport::*;
 
 use gpui::timeline::{FrameRate, TimeDisplay, format_timecode};
 use gpui::{
-	AnyElement, App, AsyncWindowContext, Bounds, ClickEvent, Context, Entity, EventEmitter,
-	FocusHandle, Focusable, Keystroke, KeyDownEvent, KeyUpEvent, MouseButton, MouseMoveEvent,
-	ObjectFit, Point, Pixels, Render, RenderImage, Rgba, SharedString, SurfaceSource, Window,
-	canvas, colors::DefaultColors, div, img, prelude::*, px, surface,
+	AnyElement, App, AsyncWindowContext, Bounds, ClickEvent, Context, DevicePixels, Entity,
+	EventEmitter, FocusHandle, Focusable, Keystroke, KeyDownEvent, KeyUpEvent, MouseButton,
+	MouseMoveEvent, ObjectFit, Point, Pixels, Render, RenderImage, Rgba, SharedString, Size,
+	SurfaceSource, Window, canvas, colors::DefaultColors, div, img, prelude::*, px, surface,
 };
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{icons, tooltip::tooltip_view};
+
+// ---------------------------------------------------------------------------
+// GPU frame registry (the 10-bit display path)
+// ---------------------------------------------------------------------------
+
+/// One GPU-backed viewer frame: the engine's F32 pipeline output uploaded
+/// as an RGBA16F texture (see `crates/oak-app/src/oakui/gpu.rs`), indexed by
+/// the `RenderImage` id it replaces. The texture carries the 10-bit content
+/// that `RenderImage`'s BGRA8 bytes cannot, so the viewer samples it
+/// straight into a 10-bit swapchain instead of going through the 8-bit
+/// sprite atlas.
+#[derive(Clone)]
+struct GpuFrameEntry {
+	/// The GPU texture, type-erased (an `Arc<wgpu::Texture>`).
+	texture: Arc<dyn std::any::Any + Send + Sync>,
+	/// The texture's dimensions in device pixels.
+	size: Size<DevicePixels>,
+	/// Insertion-order stamp (the oldest entry is evicted first).
+	seq: u64,
+}
+
+/// The registered GPU frames, keyed by `RenderImage::id.0`. The engines
+/// insert an entry next to every image they hand to `set_cpu_frame`; the
+/// viewer looks it up there and uses the texture as a
+/// [`SurfaceSource::Texture`] when present. Entries are looked up *without*
+/// removal, so a cached image keeps reusing its texture on every hit.
+/// Bounded: past [`GPU_FRAMES_CAP`] the oldest entry is evicted.
+static GPU_FRAMES: Mutex<Option<HashMap<usize, GpuFrameEntry>>> = Mutex::new(None);
+/// Insertion counter for FIFO eviction.
+static GPU_FRAMES_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Upper bound on registered frames (a playback window plus a couple of
+/// cached proxy frames; the newest 16 are enough).
+const GPU_FRAMES_CAP: usize = 16;
+
+/// Register the GPU texture standing in for the `RenderImage` with id
+/// `image_id`. Called by the engine right after it produces the image, so
+/// the viewer's `set_cpu_frame` can switch the picture to the texture.
+pub fn register_gpu_frame(
+	image_id: usize,
+	texture: Arc<dyn std::any::Any + Send + Sync>,
+	size: Size<DevicePixels>,
+) {
+	let seq = GPU_FRAMES_SEQ.fetch_add(1, Ordering::Relaxed);
+	if let Ok(mut frames) = GPU_FRAMES.lock() {
+		let frames = frames.get_or_insert_with(HashMap::new);
+		if frames.len() >= GPU_FRAMES_CAP {
+			if let Some(oldest) = frames.values().map(|e| e.seq).min() {
+				frames.retain(|_, e| e.seq != oldest);
+			}
+		}
+		frames.insert(
+			image_id,
+			GpuFrameEntry {
+				texture,
+				size,
+				seq,
+			},
+		);
+	}
+}
+
+/// Look up the GPU frame registered for `image_id`, if any. Does not remove
+/// the entry: the same image is reused on every cache hit.
+fn take_gpu_frame(image_id: usize) -> Option<GpuFrameEntry> {
+	GPU_FRAMES
+		.lock()
+		.ok()?
+		.get_or_insert_with(HashMap::new)
+		.get(&image_id)
+		.cloned()
+}
+
+/// Drop every registered GPU frame (the display-color generation bump
+/// invalidates the CPU images they belong to).
+pub fn clear_gpu_frames() {
+	if let Ok(mut frames) = GPU_FRAMES.lock() {
+		frames.get_or_insert_with(HashMap::new).clear();
+	}
+}
 
 /// A request emitted by the viewer.
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +358,10 @@ pub struct ViewerWidget<C: PlaybackClock> {
 	frame_rate: FrameRate,
 	transport: TransportState,
 	frame_source: Option<ViewerFrameSource>,
+	/// The most recent CPU frame handed to [`ViewerWidget::set_cpu_frame`],
+	/// kept alongside a GPU surface so the pixel-size / eyedropper consumers
+	/// (which read raw bytes) keep working on the 10-bit surface path.
+	cpu_image: Option<Arc<RenderImage>>,
 	focus_handle: FocusHandle,
 	safe_margins: SafeMargins,
 	zoom: ViewerZoom,
@@ -324,6 +410,7 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 			frame_rate,
 			transport: TransportState::new(),
 			frame_source: None,
+			cpu_image: None,
 			focus_handle: cx.focus_handle(),
 			safe_margins: SafeMargins::Off,
 			zoom: ViewerZoom::Fit,
@@ -352,8 +439,28 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 	/// [`RenderImage`](gpui::RenderImage) whose bytes are BGRA8 (the same
 	/// format gpui's `img` element uses) and the viewer uploads it through
 	/// the sprite atlas. `None` clears the picture (showing the placeholder).
+	///
+	/// When a GPU frame was registered for the image's id (the 10-bit
+	/// display path — the engine uploads the same pixels as an RGBA16F
+	/// texture), the picture switches to that texture instead and skips the
+	/// 8-bit sprite atlas entirely; the BGRA8 image is kept around as the
+	/// CPU fallback for pixel-size and eyedropper consumers. Without a
+	/// registered texture (no window/GPU, e.g. tests) the BGRA8 image is
+	/// used, as before.
 	pub fn set_cpu_frame(&mut self, frame: Option<Arc<RenderImage>>, cx: &mut Context<Self>) {
-		self.frame_source = frame.map(ViewerFrameSource::CpuFrame);
+		self.cpu_image = frame.clone();
+		self.frame_source = match frame {
+			Some(image) => {
+				let source = take_gpu_frame(image.id.0).map(|entry| {
+					ViewerFrameSource::Surface(SurfaceSource::Texture {
+						texture: entry.texture,
+						size: entry.size,
+					})
+				});
+				Some(source.unwrap_or(ViewerFrameSource::CpuFrame(image)))
+			}
+			None => None,
+		};
 		cx.notify();
 	}
 
@@ -417,13 +524,18 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 
 	/// The frame's native size in pixels when the source carries one (CPU
 	/// frames), `None` for platform surfaces. Used to size the safe-frame
-	/// overlay relative to the actual picture.
+	/// overlay relative to the actual picture. On the 10-bit GPU-surface path
+	/// the kept CPU image supplies the size.
 	fn frame_pixel_size(&self) -> Option<(f32, f32)> {
 		match &self.frame_source {
 			Some(ViewerFrameSource::CpuFrame(image)) => {
 				let size = image.size(0);
 				Some((size.width.0 as f32, size.height.0 as f32))
 			}
+			Some(ViewerFrameSource::Surface(_)) => self.cpu_image.as_ref().map(|image| {
+				let size = image.size(0);
+				(size.width.0 as f32, size.height.0 as f32)
+			}),
 			_ => None,
 		}
 	}
@@ -448,11 +560,13 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 	/// frame and emit [`ViewerEvent::EyedropperPick`]. No-op without a CPU
 	/// frame, when the frame carries no bytes, or when the point lands in the
 	/// letterbox. Only called while armed, by the picture's mouse-down handler.
+	/// The kept CPU image serves both the CPU-frame and the 10-bit GPU-surface
+	/// paths (the surface has no CPU-readable bytes).
 	fn sample_eyedropper(&self, position: Point<Pixels>, cx: &mut Context<Self>) {
 		let Some(bounds) = self.picture_bounds.get() else {
 			return;
 		};
-		let Some(ViewerFrameSource::CpuFrame(image)) = &self.frame_source else {
+		let Some(image) = self.cpu_image.as_ref() else {
 			return;
 		};
 		let size = image.size(0);
@@ -1128,6 +1242,62 @@ mod tests {
 		assert!(is_cpu, "the frame source should be the CPU-frame variant");
 
 		// Clearing the CPU frame falls back to the placeholder.
+		cx.update(|window, app| {
+			host.read(app)
+				.viewer
+				.clone()
+				.update(app, |viewer, cx| viewer.set_cpu_frame(None, cx));
+			let _ = window.draw(app);
+		});
+		cx.run_until_parked();
+		let is_none = cx.read(|app| host.read(app).viewer.read(app).frame_source.is_none());
+		assert!(is_none);
+	}
+
+	#[gpui::test]
+	async fn registered_gpu_frame_switches_to_surface(cx: &mut TestAppContext) {
+		// The 10-bit display path: the engine registers an RGBA16F texture
+		// under the RenderImage's id, so handing that image to the viewer
+		// takes the surface path (sampled straight into the swapchain) —
+		// the BGRA8 bytes are only the CPU fallback. Any Send+Sync value
+		// stands in for the wgpu texture here; the registry never touches
+		// its contents (headless tests have no GPU).
+		use gpui::{DevicePixels, RenderImage, Size};
+		use image::{Frame, RgbaImage};
+
+		let rgba = RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 0, 255]));
+		let frame = Arc::new(RenderImage::new(smallvec::SmallVec::from_elem(
+			Frame::new(rgba),
+			1,
+		)));
+		register_gpu_frame(
+			frame.id.0,
+			Arc::new(0u32),
+			Size {
+				width: DevicePixels::from(2),
+				height: DevicePixels::from(2),
+			},
+		);
+
+		let (cx, host) = make_host(cx);
+		cx.update(|window, app| {
+			host.read(app)
+				.viewer
+				.clone()
+				.update(app, |viewer, cx| viewer.set_cpu_frame(Some(frame), cx));
+			let _ = window.draw(app);
+		});
+		cx.run_until_parked();
+
+		let is_surface = cx.read(|app| {
+			matches!(
+				host.read(app).viewer.read(app).frame_source,
+				Some(ViewerFrameSource::Surface(_))
+			)
+		});
+		assert!(is_surface, "a registered GPU frame must take the surface path");
+
+		// Clearing the CPU frame drops the surface source too.
 		cx.update(|window, app| {
 			host.read(app)
 				.viewer
