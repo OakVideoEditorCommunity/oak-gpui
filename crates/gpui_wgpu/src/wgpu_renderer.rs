@@ -139,7 +139,9 @@ fn preferred_surface_formats() -> &'static [wgpu::TextureFormat] {
 
 /// Picks the swapchain format for a surface: the first preferred format
 /// the surface supports, falling back to the first non-sRGB format the
-/// surface offers, then to whatever it offers first.
+/// surface offers, then to whatever it offers first (an sRGB format there
+/// is a last resort — the surface format is also the shader output format,
+/// so the hardware would encode the shader's already-sRGB values again).
 fn select_surface_format(
 	preferred: &[wgpu::TextureFormat],
 	supported: &[wgpu::TextureFormat],
@@ -149,7 +151,16 @@ fn select_surface_format(
 		.find(|f| supported.contains(f))
 		.copied()
 		.or_else(|| supported.iter().find(|f| !f.is_srgb()).copied())
-		.or_else(|| supported.first().copied())
+		.or_else(|| {
+			let format = supported.first().copied();
+			if let Some(format) = format.filter(|f| f.is_srgb()) {
+				log::warn!(
+					"surface offers only the sRGB format {format:?}; the format linearizes \
+					 shader output, so sRGB-encoded content is encoded once more (double encoding)"
+				);
+			}
+			format
+		})
 }
 
 pub struct WgpuSurfaceConfig {
@@ -205,8 +216,12 @@ struct WgpuResources {
 	bind_group_layouts: WgpuBindGroupLayouts,
 	atlas_sampler: wgpu::Sampler,
 	surface_sampler: wgpu::Sampler,
-	#[allow(dead_code)]
-	surface_uniform_buffer: wgpu::Buffer,
+	/// One reused uniform buffer holding [`SurfaceParams`] for every painted surface in a frame,
+	/// each at a distinct (alignment-strided) offset — same slotting scheme as
+	/// [`Self::blur_params_buffer`], for the same last-write-at-submit reason.
+	surface_params_buffer: wgpu::Buffer,
+	/// Stride between [`SurfaceParams`] slots in `surface_params_buffer`.
+	surface_params_stride: u64,
 	/// One reused uniform buffer holding [`BlurParams`] for every blur pass in a frame, each at a
 	/// distinct (alignment-strided) offset. Avoids allocating a buffer per pass; distinct offsets
 	/// mean `write_buffer`'s last-write-at-submit semantics don't clobber earlier passes.
@@ -263,6 +278,14 @@ const MAX_FILTER_DEPTH: usize = 2;
 /// Number of [`BlurParams`] slots in the shared blur-params buffer (one per blur pass per frame).
 /// Each frame uses 4 passes per backdrop/group plus one blit; 256 covers dozens of filters.
 const BLUR_PARAMS_SLOTS: u64 = 256;
+
+/// Number of [`SurfaceParams`] slots in the shared surface-params buffer (one per painted surface
+/// per frame). A frame paints one surface per open viewer (source + program = 2 today), so 256
+/// slots leave wide headroom. Distinct (alignment-strided) offsets are what keep each surface's
+/// `write_buffer` from clobbering its neighbours' bounds under last-write-at-submit semantics —
+/// a single shared slot collapsed every surface onto the last-written bounds and blacked out all
+/// but one viewer.
+const SURFACE_PARAMS_SLOTS: u64 = 256;
 
 pub struct WgpuRenderer {
 	/// Shared GPU context for device recovery coordination (unused on WASM).
@@ -421,6 +444,12 @@ impl WgpuRenderer {
 					context.adapter.get_info().name
 				)
 			})?;
+		log::info!(
+			"Surface adapter={:?} backend={:?} picked format={:?}",
+			context.adapter.get_info().name,
+			context.adapter.get_info().backend,
+			surface_format
+		);
 
 		let pick_alpha_mode =
 			|preferences: &[wgpu::CompositeAlphaMode]| -> anyhow::Result<wgpu::CompositeAlphaMode> {
@@ -514,14 +543,18 @@ impl WgpuRenderer {
 			..Default::default()
 		});
 
-		let surface_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-			label: Some("surface_uniform_buffer"),
-			size: std::mem::size_of::<SurfaceParams>() as u64,
+		let uniform_alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+		// Shared surface-params buffer: SURFACE_PARAMS_SLOTS slots, one per painted surface per
+		// frame, each one alignment stride apart (see SURFACE_PARAMS_SLOTS).
+		let surface_params_stride =
+			(std::mem::size_of::<SurfaceParams>() as u64).next_multiple_of(uniform_alignment);
+		let surface_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some("surface_params_buffer"),
+			size: surface_params_stride * SURFACE_PARAMS_SLOTS,
 			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
 
-		let uniform_alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
 		// Shared blur-params buffer: BLUR_PARAMS_SLOTS slots, each one alignment stride apart.
 		let blur_params_stride =
 			(std::mem::size_of::<BlurParams>() as u64).next_multiple_of(uniform_alignment);
@@ -617,7 +650,8 @@ impl WgpuRenderer {
 			bind_group_layouts,
 			atlas_sampler,
 			surface_sampler,
-			surface_uniform_buffer,
+			surface_params_buffer,
+			surface_params_stride,
 			blur_params_buffer,
 			globals_buffer,
 			globals_bind_group,
@@ -1879,7 +1913,8 @@ impl WgpuRenderer {
 	#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 	fn draw_surfaces(&self, surfaces: &[PaintSurface], pass: &mut wgpu::RenderPass<'_>) -> bool {
 		let resources = self.resources();
-		for surface in surfaces {
+		let params_size = std::mem::size_of::<SurfaceParams>() as u64;
+		for (slot, surface) in surfaces.iter().enumerate() {
 			let Some(wgpu_texture) = surface.texture.downcast_ref::<wgpu::Texture>() else {
 				continue;
 			};
@@ -1891,9 +1926,12 @@ impl WgpuRenderer {
 				content_mask: surface.content_mask.bounds.into(),
 			};
 
+			// Each surface writes its own alignment-strided slot (see SURFACE_PARAMS_SLOTS);
+			// a shared slot would leave every surface with the last-written bounds.
+			let offset = (slot as u64 % SURFACE_PARAMS_SLOTS) * resources.surface_params_stride;
 			resources.queue.write_buffer(
-				&resources.surface_uniform_buffer,
-				0,
+				&resources.surface_params_buffer,
+				offset,
 				bytemuck::bytes_of(&params),
 			);
 
@@ -1905,7 +1943,11 @@ impl WgpuRenderer {
 					entries: &[
 						wgpu::BindGroupEntry {
 							binding: 0,
-							resource: resources.surface_uniform_buffer.as_entire_binding(),
+							resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+								buffer: &resources.surface_params_buffer,
+								offset,
+								size: std::num::NonZeroU64::new(params_size),
+							}),
 						},
 						wgpu::BindGroupEntry {
 							binding: 1,

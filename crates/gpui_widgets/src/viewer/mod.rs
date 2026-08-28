@@ -90,6 +90,7 @@ pub fn register_gpu_frame(
 
 /// Look up the GPU frame registered for `image_id`, if any. Does not remove
 /// the entry: the same image is reused on every cache hit.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn take_gpu_frame(image_id: usize) -> Option<GpuFrameEntry> {
 	GPU_FRAMES
 		.lock()
@@ -451,12 +452,18 @@ impl<C: PlaybackClock> ViewerWidget<C> {
 		self.cpu_image = frame.clone();
 		self.frame_source = match frame {
 			Some(image) => {
+				// The 10-bit GPU-texture upgrade is only available where
+				// [`SurfaceSource::Texture`] exists (linux/freebsd); elsewhere the
+				// BGRA8 CPU frame is used as-is.
+				#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 				let source = take_gpu_frame(image.id.0).map(|entry| {
 					ViewerFrameSource::Surface(SurfaceSource::Texture {
 						texture: entry.texture,
 						size: entry.size,
 					})
 				});
+				#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+				let source: Option<ViewerFrameSource> = None;
 				Some(source.unwrap_or(ViewerFrameSource::CpuFrame(image)))
 			}
 			None => None,

@@ -473,6 +473,12 @@ struct MacWindowState {
 	cursor_visible: Arc<AtomicBool>,
 	display_link: Option<DisplayLink>,
 	renderer: renderer::Renderer,
+	/// Who maps this window's pixels to the display (retagged on screen
+	/// changes so the self-managed pass-through follows the window).
+	layer_color_management: gpui::LayerColorManagement,
+	/// The colorspace the window's content is declared to be in (the tag
+	/// ColorSync maps from when the OS manages the display transform).
+	content_colorspace: gpui::WindowContentColorspace,
 	request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
 	event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
 	activate_callback: Option<Box<dyn FnMut(bool)>>,
@@ -800,6 +806,8 @@ impl MacWindow {
 					bounds.size.map(|pixels| pixels.as_f32()),
 					false,
 				),
+				layer_color_management: gpui::LayerColorManagement::default(),
+				content_colorspace: gpui::WindowContentColorspace::default(),
 				request_frame_callback: None,
 				event_callback: None,
 				activate_callback: None,
@@ -1647,6 +1655,27 @@ impl PlatformWindow for MacWindow {
 		None
 	}
 
+	fn set_layer_color_management(&mut self, mode: gpui::LayerColorManagement) {
+		let mut lock = self.0.lock();
+		lock.layer_color_management = mode;
+		let display_id = current_display_id(lock.native_window);
+		lock.renderer
+			.set_layer_color_management(mode, display_id, lock.content_colorspace);
+	}
+
+	fn set_content_colorspace(&mut self, colorspace: gpui::WindowContentColorspace) {
+		let mut lock = self.0.lock();
+		lock.content_colorspace = colorspace;
+		// The layer tag declares the content's colorspace only when the OS
+		// performs the display mapping; when the app self-manages it, the tag
+		// is the display's colorspace regardless of the content declaration.
+		if lock.layer_color_management == gpui::LayerColorManagement::OsManaged {
+			let display_id = current_display_id(lock.native_window);
+			lock.renderer
+				.set_layer_color_management(lock.layer_color_management, display_id, colorspace);
+		}
+	}
+
 	fn update_ime_position(&self, _bounds: Bounds<Pixels>) {
 		let executor = self.0.lock().foreground_executor.clone();
 		executor
@@ -2363,8 +2392,35 @@ extern "C" fn window_did_change_screen(this: &Object, _: Sel, _: id) {
 	let window_state = unsafe { get_window_state(this) };
 	let mut lock = window_state.as_ref().lock();
 	lock.start_display_link();
+	// The self-managed pass-through tag carries the display's colorspace;
+	// re-tag so it follows the window to the new screen (OS-managed is
+	// sRGB everywhere, but retagging is cheap and keeps one code path).
+	let mode = lock.layer_color_management;
+	let display_id = current_display_id(lock.native_window);
+	lock.renderer
+		.set_layer_color_management(mode, display_id, lock.content_colorspace);
 	drop(lock);
 	update_window_scale_factor(&window_state);
+}
+
+/// The `CGDirectDisplayID` of the screen the window is currently on,
+/// read from the screen's device description (`NSScreenNumber`). Falls
+/// back to the main display when the window has no screen (minimized) or
+/// the description lacks the number.
+fn current_display_id(native_window: id) -> CGDirectDisplayID {
+	unsafe {
+		let screen: id = msg_send![native_window, screen];
+		if !screen.is_null() {
+			let device_description: id = msg_send![screen, deviceDescription];
+			let key: id = ns_string("NSScreenNumber");
+			let screen_number: id = msg_send![device_description, objectForKey: key];
+			if !screen_number.is_null() {
+				let number: NSUInteger = msg_send![screen_number, unsignedIntegerValue];
+				return number as CGDirectDisplayID;
+			}
+		}
+	}
+	crate::display_colorspace::main_display_id()
 }
 
 extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) {

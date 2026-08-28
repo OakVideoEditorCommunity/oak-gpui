@@ -67,6 +67,10 @@ use wayland_protocols::{
 	wp::fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
 	xdg::dialog::v1::client::xdg_dialog_v1::XdgDialogV1,
 };
+use wayland_protocols::wp::color_management::v1::client::{
+	wp_color_management_surface_v1, wp_color_manager_v1, wp_image_description_creator_params_v1,
+	wp_image_description_v1,
+};
 use wayland_protocols_plasma::blur::client::{org_kde_kwin_blur, org_kde_kwin_blur_manager};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 use xkbcommon::xkb::ffi::XKB_KEYMAP_FORMAT_TEXT_V1;
@@ -132,6 +136,11 @@ pub struct Globals {
 	pub gesture_manager: Option<zwp_pointer_gestures_v1::ZwpPointerGesturesV1>,
 	pub dialog: Option<xdg_wm_dialog_v1::XdgWmDialogV1>,
 	pub system_bell: Option<xdg_system_bell_v1::XdgSystemBellV1>,
+	/// color-management-v1: declares each surface's content colorspace to
+	/// the compositor (the OS side of the single-mapping rule on Wayland).
+	/// `None` on compositors without the extension — they assume sRGB,
+	/// which is exactly what the app presents, so behavior is unchanged.
+	pub color_manager: Option<wp_color_manager_v1::WpColorManagerV1>,
 	pub executor: ForegroundExecutor,
 }
 
@@ -174,6 +183,10 @@ impl Globals {
 			gesture_manager: globals.bind(&qh, 1..=3, ()).ok(),
 			dialog: globals.bind(&qh, dialog_v..=dialog_v, ()).ok(),
 			system_bell: globals.bind(&qh, 1..=1, ()).ok(),
+			// The compositor advertises the version it implements; negotiate
+			// up to 2 (the sRGB declaration only uses requests available at
+			// version 1, so a v1 compositor works identically).
+			color_manager: globals.bind(&qh, 1..=2, ()).ok(),
 			executor,
 			qh,
 		}
@@ -1176,6 +1189,14 @@ delegate_noop!(WaylandClientStatePtr: ignore zwp_text_input_manager_v3::ZwpTextI
 delegate_noop!(WaylandClientStatePtr: ignore org_kde_kwin_blur::OrgKdeKwinBlur);
 delegate_noop!(WaylandClientStatePtr: ignore wp_viewporter::WpViewporter);
 delegate_noop!(WaylandClientStatePtr: ignore wp_viewport::WpViewport);
+// color-management-v1: the app only ever SETS image descriptions (the
+// surface content colorspace declaration) — the manager's capability
+// events and the surface/creator lifecycle events need no handling, so
+// ignore them. The image-description `ready`/`failed` events DO get a real
+// Dispatch below.
+delegate_noop!(WaylandClientStatePtr: ignore wp_color_manager_v1::WpColorManagerV1);
+delegate_noop!(WaylandClientStatePtr: ignore wp_color_management_surface_v1::WpColorManagementSurfaceV1);
+delegate_noop!(WaylandClientStatePtr: ignore wp_image_description_creator_params_v1::WpImageDescriptionCreatorParamsV1);
 
 impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
 	fn event(
@@ -2304,6 +2325,36 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ObjectId> for Wayland
 
 		drop(state);
 		window.handle_fractional_scale_event(event);
+	}
+}
+
+impl Dispatch<wp_image_description_v1::WpImageDescriptionV1, ObjectId> for WaylandClientStatePtr {
+	fn event(
+		this: &mut Self,
+		image_description: &wp_image_description_v1::WpImageDescriptionV1,
+		event: <wp_image_description_v1::WpImageDescriptionV1 as Proxy>::Event,
+		surface_id: &ObjectId,
+		_: &Connection,
+		_: &QueueHandle<Self>,
+	) {
+		use wp_image_description_v1::Event;
+		match event {
+			// The description is usable now — attach it to the surface.
+			// (Interface v1 sends `Ready`, v2+ sends `Ready2`.)
+			Event::Ready { .. } | Event::Ready2 { .. } => {
+				let client = this.get_client();
+				let mut state = client.borrow_mut();
+				let Some(window) = get_window(&mut state, surface_id) else {
+					return;
+				};
+				drop(state);
+				window.apply_color_description(image_description.clone());
+			}
+			Event::Failed { msg, .. } => {
+				log::warn!("wayland color-management image description rejected: {msg}");
+			}
+			_ => {}
+		}
 	}
 }
 

@@ -743,6 +743,27 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 	fn set_client_inset(&self, _inset: Pixels) {}
 	fn gpu_specs(&self) -> Option<GpuSpecs>;
 
+	/// Declare who maps this window's pixels to the physical display (the
+	/// single-mapping rule of color management). `OsManaged` tags the
+	/// content as a defined colorimetric space (sRGB) so the OS performs
+	/// the display mapping; `SelfManaged` tags the layer with the display's
+	/// own color space so the OS passes the app's already-mapped pixels
+	/// through. Platforms without a per-layer declaration (Windows, X11)
+	/// ignore it; Wayland declares the content space through
+	/// color-management-v1 at the surface level, not here.
+	fn set_layer_color_management(&mut self, _mode: LayerColorManagement) {}
+
+	/// Declare the colorimetric space this window's content is encoded in
+	/// (the "content is what" half of the color-management declaration; see
+	/// [`WindowContentColorspace`]). Combined with
+	/// [`Self::set_layer_color_management`] the platform knows both what the
+	/// content is and who maps it, so the one display mapping is fully
+	/// determined. macOS retags the Metal layer; Wayland rebuilds the
+	/// color-management-v1 image description; platforms without a per-layer
+	/// declaration (Windows, X11) record it without acting on it — the OS
+	/// maps sRGB-declared content by default.
+	fn set_content_colorspace(&mut self, _colorspace: WindowContentColorspace) {}
+
 	/// Returns the GPU context for this window's renderer.
 	/// The returned `Box` contains `(Arc<wgpu::Device>, Arc<wgpu::Queue>)`.
 	#[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -1709,6 +1730,71 @@ pub enum WindowAppearance {
 	///
 	/// On macOS, this corresponds to the `NSAppearanceNameVibrantDark` appearance.
 	VibrantDark,
+}
+
+/// Who performs the final color mapping from the window's rendered pixels
+/// to the physical display, declared to the platform layer so the mapping
+/// happens exactly once (the single-mapping rule of color management).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum LayerColorManagement {
+	/// The OS maps the window's content to the display. The content is a
+	/// defined colorimetric space (sRGB unless the platform declares
+	/// otherwise), so the layer is tagged accordingly and the OS performs
+	/// the one and only display mapping.
+	#[default]
+	OsManaged,
+
+	/// The application has already mapped its content to the display (it
+	/// applied the display ICC transform itself). The layer is tagged with
+	/// the display's own color space so the OS passes the pixels through
+	/// instead of correcting them a second time.
+	SelfManaged,
+}
+
+/// The colorimetric space the window's content is encoded in, declared to
+/// the platform layer alongside [`LayerColorManagement`] (who maps) so the
+/// one display mapping is fully determined: the content space is named
+/// here, the display space is known to the OS, and whichever side maps
+/// does so exactly once.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowContentColorspace {
+	/// The primaries (chromaticities) the content is encoded with.
+	pub primaries: ContentPrimaries,
+	/// The transfer function (encoding curve) the content is encoded with.
+	pub transfer: ContentTransfer,
+}
+
+/// The primaries (chromaticity coordinates) the window's content is
+/// encoded with.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum ContentPrimaries {
+	/// sRGB primaries — identical to BT.709, the classic SDR
+	/// broadcast/video primaries.
+	#[default]
+	Srgb,
+	/// Display P3 primaries (the wider, DCI-P3-derived space of Apple and
+	/// modern displays).
+	DisplayP3,
+	/// BT.2020 primaries (the ultra-wide space of UHD/HDR video).
+	Bt2020,
+}
+
+/// The transfer function (encoding curve) the window's content is encoded
+/// with.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum ContentTransfer {
+	/// The sRGB transfer curve (the standard SDR curve of displays and
+	/// web/video content).
+	#[default]
+	Srgb,
+	/// Pure gamma 2.2 (the classic video SDR curve; near-identical to sRGB
+	/// in practice).
+	Gamma22,
+	/// SMPTE ST 2084 (PQ), the perceptually-quantized HDR curve (HDR10).
+	Pq,
+	/// Hybrid Log-Gamma, the broadcast HDR curve that carries SDR
+	/// compatibility in its lower range.
+	Hlg,
 }
 
 /// The appearance of the background of the window itself, when there is

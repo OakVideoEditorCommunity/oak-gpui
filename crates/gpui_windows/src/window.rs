@@ -53,6 +53,11 @@ pub struct WindowsWindowState {
 	pub border_offset: WindowBorderOffset,
 	pub appearance: Cell<WindowAppearance>,
 	pub background_appearance: Cell<WindowBackgroundAppearance>,
+	/// The colorspace the window's content is declared to be in. Windows
+	/// Auto Color Management maps a swap chain only when it is declared
+	/// sRGB; non-sRGB declarations are handled by the app itself, so this
+	/// is informational here (see `set_content_colorspace`).
+	pub content_colorspace: Cell<WindowContentColorspace>,
 	pub scale_factor: Cell<f32>,
 	pub restore_from_minimized: Cell<Option<Box<dyn FnMut(RequestFrameOptions)>>>,
 
@@ -175,6 +180,7 @@ impl WindowsWindowState {
 			border_offset,
 			appearance: Cell::new(appearance),
 			background_appearance: Cell::new(WindowBackgroundAppearance::Opaque),
+			content_colorspace: Cell::new(WindowContentColorspace::default()),
 			scale_factor: Cell::new(scale_factor),
 			restore_from_minimized: Cell::new(restore_from_minimized),
 			min_size,
@@ -1089,6 +1095,15 @@ impl PlatformWindow for WindowsWindow {
 		return Some(self.state.renderer.borrow().gpu_specs());
 		#[cfg(not(feature = "wgpu"))]
 		self.state.renderer.borrow().gpu_specs().log_err()
+	}
+
+	fn set_content_colorspace(&mut self, colorspace: WindowContentColorspace) {
+		// Informational on Windows: Auto Color Management maps a swap chain
+		// only when it is declared sRGB (`declare_srgb_swap_chain`), and the
+		// declaration is fixed at creation — non-sRGB content is mapped by
+		// the app's own pipeline, which reads this declaration. Nothing to
+		// re-tag at runtime.
+		self.state.content_colorspace.set(colorspace);
 	}
 
 	fn update_ime_position(&self, bounds: Bounds<Pixels>) {

@@ -11,6 +11,7 @@ use futures::channel::oneshot::Receiver;
 
 use raw_window_handle as rwh;
 use wayland_backend::client::ObjectId;
+use wayland_client::QueueHandle;
 use wayland_client::WEnum;
 use wayland_client::{
 	Proxy,
@@ -24,18 +25,21 @@ use wayland_protocols::{
 	wp::fractional_scale::v1::client::wp_fractional_scale_v1,
 	xdg::dialog::v1::client::xdg_dialog_v1::XdgDialogV1,
 };
+use wayland_protocols::wp::color_management::v1::client::{
+	wp_color_management_surface_v1, wp_color_manager_v1, wp_image_description_v1,
+};
 use wayland_protocols_plasma::blur::client::org_kde_kwin_blur;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1;
 
 use crate::linux::wayland::{display::WaylandDisplay, serial::SerialKind};
 use crate::linux::{Globals, Output, WaylandClientStatePtr, get_window};
 use gpui::{
-	AnyWindowHandle, Bounds, Capslock, Decorations, DevicePixels, GpuSpecs, Modifiers, Pixels,
-	PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-	PromptButton, PromptLevel, RequestFrameOptions, ResizeEdge, Scene, Size, Tiling,
-	WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowControls,
-	WindowDecorations, WindowKind, WindowParams, layer_shell::LayerShellNotSupportedError, px,
-	size,
+	AnyWindowHandle, Bounds, Capslock, ContentPrimaries, ContentTransfer, Decorations,
+	DevicePixels, GpuSpecs, Modifiers, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
+	PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
+	ResizeEdge, Scene, Size, Tiling, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+	WindowContentColorspace, WindowControlArea, WindowControls, WindowDecorations, WindowKind,
+	WindowParams, layer_shell::LayerShellNotSupportedError, px, size,
 };
 use gpui_wgpu::{CompositorGpuHint, WgpuRenderer, WgpuSurfaceConfig, wgpu};
 
@@ -99,6 +103,19 @@ pub struct WaylandWindowState {
 	appearance: WindowAppearance,
 	blur: Option<org_kde_kwin_blur::OrgKdeKwinBlur>,
 	viewport: Option<wp_viewport::WpViewport>,
+	/// color-management-v1 handle for this surface (the OS side of the
+	/// single-mapping rule); `None` when the compositor lacks the extension.
+	color_surface: Option<wp_color_management_surface_v1::WpColorManagementSurfaceV1>,
+	/// The image description while it waits for the compositor's `ready`
+	/// event (illegal to use before then); dropped once applied. Rebuilt
+	/// with a new description when the content colorspace changes.
+	pending_color_description: Option<wp_image_description_v1::WpImageDescriptionV1>,
+	/// The colorimetric space this surface's content is encoded in, as
+	/// declared to the compositor via color-management-v1 (the "content is
+	/// what" half of the single-mapping rule; the compositor maps it to the
+	/// display — the "who maps" half is always the OS on Wayland). Kept so
+	/// a later `set_content_colorspace` can rebuild the description.
+	colorspace: WindowContentColorspace,
 	outputs: HashMap<ObjectId, Output>,
 	display: Option<(ObjectId, Output)>,
 	globals: Globals,
@@ -325,6 +342,49 @@ pub struct WaylandWindowStatePtr {
 	callbacks: Rc<RefCell<Callbacks>>,
 }
 
+/// Creates a parametric color-management-v1 image description declaring
+/// `colorspace` for the surface whose id is `surface_id` (the description
+/// is looked up by that id in the client's dispatch, so the window's
+/// surface id is used as the object data, mirroring window creation).
+///
+/// The description is not usable until the compositor replies with its
+/// `ready`/`ready2` event — the caller keeps it pending (or queues it for
+/// `apply_color_description`) until then.
+fn create_color_description(
+	color_manager: &wp_color_manager_v1::WpColorManagerV1,
+	qh: &QueueHandle<WaylandClientStatePtr>,
+	surface_id: ObjectId,
+	colorspace: WindowContentColorspace,
+) -> wp_image_description_v1::WpImageDescriptionV1 {
+	let params = color_manager.create_parametric_creator(qh, ());
+	let primaries = match colorspace.primaries {
+		ContentPrimaries::Srgb => wp_color_manager_v1::Primaries::Srgb,
+		ContentPrimaries::DisplayP3 => wp_color_manager_v1::Primaries::DisplayP3,
+		ContentPrimaries::Bt2020 => wp_color_manager_v1::Primaries::Bt2020,
+	};
+	params.set_primaries_named(primaries);
+	// Protocol v1 has no sRGB transfer-function value a client can use
+	// (`srgb` was only added in v2, deprecated right after): for sRGB-class
+	// SDR content the compositor-side recommendation is to declare gamma
+	// 2.2, which is near-identical in practice — so both `Srgb` and
+	// `Gamma22` content map to it.
+	let transfer = match colorspace.transfer {
+		ContentTransfer::Srgb | ContentTransfer::Gamma22 => {
+			wp_color_manager_v1::TransferFunction::Gamma22
+		}
+		ContentTransfer::Pq => wp_color_manager_v1::TransferFunction::St2084Pq,
+		ContentTransfer::Hlg => wp_color_manager_v1::TransferFunction::Hlg,
+	};
+	params.set_tf_named(transfer);
+	// The protocol's default luminances are SDR (0.2–80 cd/m²); an HDR
+	// transfer function implies a wider volume, so pin it explicitly: PQ
+	// 1.0 peaks at 10000 cd/m² with an 80 cd/m² reference white.
+	if matches!(colorspace.transfer, ContentTransfer::Pq | ContentTransfer::Hlg) {
+		params.set_luminances(0, 10000, 80);
+	}
+	params.create(qh, surface_id)
+}
+
 impl WaylandWindowState {
 	pub(crate) fn new(
 		handle: AnyWindowHandle,
@@ -373,12 +433,34 @@ impl WaylandWindowState {
 				xdg_state.toplevel.set_title(title.to_string());
 			}
 			// Set max window size based on the GPU's maximum texture dimension.
-			// This prevents the window from being resized larger than what the GPU can render.
+			// This prevents the window from being resized larger than the GPU can render.
 			let max_texture_size = renderer.max_texture_size() as i32;
 			xdg_state
 				.toplevel
 				.set_max_size(max_texture_size, max_texture_size);
 		}
+
+		// color-management-v1: declare the surface content's colorspace so a
+		// color-managed compositor maps it to the display (the OS side of
+		// the single-mapping rule). The image description object only
+		// becomes usable on its `ready` event — handled in
+		// `apply_color_description` — so keep both objects on the state.
+		// `colorspace` defaults to sRGB content (Srgb + Srgb), which is
+		// what the app presented before this declaration existed.
+		let colorspace = WindowContentColorspace::default();
+		let (color_surface, pending_color_description) = match globals.color_manager.as_ref() {
+			Some(color_manager) => {
+				let cm_surface = color_manager.get_surface(&surface, &globals.qh, ());
+				let desc = create_color_description(
+					color_manager,
+					&globals.qh,
+					surface.id(),
+					colorspace,
+				);
+				(Some(cm_surface), Some(desc))
+			}
+			None => (None, None),
+		};
 
 		Ok(Self {
 			surface_state,
@@ -389,6 +471,9 @@ impl WaylandWindowState {
 			app_id: None,
 			blur: None,
 			viewport,
+			color_surface,
+			pending_color_description,
+			colorspace,
 			globals,
 			outputs: HashMap::default(),
 			display: None,
@@ -581,6 +666,25 @@ impl WaylandWindowStatePtr {
 
 	pub fn surface(&self) -> wl_surface::WlSurface {
 		self.state.borrow().surface.clone()
+	}
+
+	/// Applies a ready image description to this window's surface
+	/// (color-management-v1), replacing whatever description was applied
+	/// before. Called from the image-description `ready` dispatch for both
+	/// the initial declaration and rebuilds after a colorspace change; a
+	/// no-op when the compositor lacks the extension. The pending hold on
+	/// the description is released — `set_image_description` has copy
+	/// semantics, so the object may be dropped right after.
+	pub fn apply_color_description(&self, desc: wp_image_description_v1::WpImageDescriptionV1) {
+		let mut state = self.state.borrow_mut();
+		state.pending_color_description = None;
+		let Some(color_surface) = state.color_surface.as_ref() else {
+			return;
+		};
+		color_surface.set_image_description(&desc, wp_color_manager_v1::RenderIntent::Perceptual);
+		let surface = state.surface.clone();
+		drop(state);
+		surface.commit();
 	}
 
 	pub fn toplevel(&self) -> Option<xdg_toplevel::XdgToplevel> {
@@ -1307,6 +1411,27 @@ impl PlatformWindow for WaylandWindow {
 		let mut state = self.borrow_mut();
 		state.background_appearance = background_appearance;
 		update_window(state);
+	}
+
+	fn set_content_colorspace(&mut self, colorspace: WindowContentColorspace) {
+		let mut state = self.borrow_mut();
+		state.colorspace = colorspace;
+		// Rebuild the color-management-v1 image description for the new
+		// space; the compositor replies with `ready`, which the client
+		// dispatch routes back into `apply_color_description` (the pending
+		// slot replaced here is the same one that call consumes). No-op
+		// when the compositor lacks the extension — it assumes sRGB, which
+		// the recorded value only overrides on compositors that care.
+		let Some(color_manager) = state.globals.color_manager.as_ref() else {
+			return;
+		};
+		let desc = create_color_description(
+			color_manager,
+			&state.globals.qh,
+			state.surface.id(),
+			colorspace,
+		);
+		state.pending_color_description = Some(desc);
 	}
 
 	fn background_appearance(&self) -> WindowBackgroundAppearance {

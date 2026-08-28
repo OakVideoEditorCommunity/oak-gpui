@@ -7,7 +7,8 @@ use crate::{
 	DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
 	EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global, GlobalElementId,
 	GlyphId, GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
-	Keystroke, KeystrokeEvent, LayoutId, Lerp, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
+	Keystroke, KeystrokeEvent, LayerColorManagement, LayoutId, Lerp, LineLayoutIndex, Modifiers,
+	ModifiersChangedEvent,
 	MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
 	PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
 	PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
@@ -17,8 +18,9 @@ use crate::{
 	SystemWindowTab, SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task,
 	TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState, TransformationMatrix,
 	Transition, TransitionState, Underline, UnderlineStyle, WindowAppearance,
-	WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowOptions,
-	WindowParams, WindowTextSystem, point, prelude::*, px, rems, size, transparent_black,
+	WindowBackgroundAppearance, WindowBounds, WindowContentColorspace, WindowControls,
+	WindowDecorations, WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, px, rems,
+	size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
@@ -5544,6 +5546,26 @@ impl Window {
 	#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 	pub fn gpu_device_lost(&self) -> Option<bool> {
 		self.platform_window.gpu_device_lost()
+	}
+
+	/// Declare who maps this window's pixels to the physical display (the
+	/// single-mapping rule of color management). Call this when the app's
+	/// display color-management mode changes; on macOS it retags the Metal
+	/// layer so ColorSync either maps the content (OS-managed) or passes
+	/// the app's already-mapped pixels through (self-managed). Other
+	/// platforms treat it as a no-op or surface-level declaration.
+	pub fn set_layer_color_management(&mut self, mode: LayerColorManagement) {
+		self.platform_window.set_layer_color_management(mode);
+	}
+
+	/// Declare the colorimetric space this window's content is encoded in
+	/// (see [`WindowContentColorspace`]) — the "content is what" half of the
+	/// color-management declaration, matched with the "who maps" half in
+	/// [`Self::set_layer_color_management`]. Call this when the app's output
+	/// colorspace changes; platforms with a per-layer declaration (macOS,
+	/// Wayland) act on it immediately, others record it for later.
+	pub fn set_content_colorspace(&mut self, colorspace: WindowContentColorspace) {
+		self.platform_window.set_content_colorspace(colorspace);
 	}
 
 	/// Perform titlebar double-click action.

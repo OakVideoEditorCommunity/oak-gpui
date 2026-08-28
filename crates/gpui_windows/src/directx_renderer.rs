@@ -1206,6 +1206,13 @@ impl DirectXResources {
 				height,
 			)?
 		};
+		// sRGB is declared unconditionally: with Auto Color Management off
+		// the declaration is lazy (DXGI keeps the legacy default, which ACM
+		// also reads as sRGB), and with ACM on the app's policy is always
+		// OS-managed — the OS performs the one display mapping — so the
+		// sRGB declaration is exactly right either way. See
+		// `declare_srgb_swap_chain`.
+		declare_srgb_swap_chain(&swap_chain);
 
 		let (
 			render_target,
@@ -1748,6 +1755,29 @@ fn create_swap_chain(
 		unsafe { dxgi_factory.CreateSwapChainForHwnd(device, hwnd, &desc, None, None) }?;
 	unsafe { dxgi_factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER) }?;
 	Ok(swap_chain)
+}
+
+/// Declare the swap chain's content as sRGB (`SetColorSpace1`).
+///
+/// The renderer always presents sRGB-encoded pixels; without an explicit
+/// declaration DXGI assumes the legacy "RGB studio G22 none P709" default,
+/// which Windows 11 Auto Color Management also treats as sRGB — but making
+/// the declaration explicit removes the reliance on the implicit default and
+/// is the single-mapping contract the app honors: the OS (DWM/ACM) performs
+/// the one display mapping, and the app must not also apply the display ICC.
+/// Best-effort: older drivers without `IDXGISwapChain3` keep the default.
+fn declare_srgb_swap_chain(swap_chain: &IDXGISwapChain1) {
+	match swap_chain.cast::<IDXGISwapChain3>() {
+		Ok(swap_chain3) => unsafe {
+			if let Err(error) = swap_chain3.SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709)
+			{
+				log::warn!("SetColorSpace1(sRGB) failed: {error}");
+			}
+		},
+		Err(error) => {
+			log::warn!("IDXGISwapChain3 unavailable, swap chain color space left implicit: {error}");
+		}
+	}
 }
 
 #[inline]

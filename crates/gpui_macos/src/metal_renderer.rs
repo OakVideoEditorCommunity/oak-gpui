@@ -251,21 +251,64 @@ impl MetalRenderer {
 			];
 		}
 
-		// Color management coordination: when the app self-manages the
-		// display transform (OAK_MACOS_LAYER_COLORSPACE=display, set at
-		// startup when display-ICC color management is active), tag the
-		// layer with the DISPLAY's colorspace so ColorSync's mapping
-		// becomes a pass-through — otherwise the OS would re-correct our
-		// already-corrected pixels (double correction).
-		if std::env::var_os("OAK_MACOS_LAYER_COLORSPACE").as_deref()
-			== Some(std::ffi::OsStr::new("display"))
-		{
-			crate::display_colorspace::with_main_display_colorspace(|space| unsafe {
+		// Color management coordination (the single-mapping rule): by default
+		// the content is colorimetric sRGB and ColorSync maps it to the
+		// display, so tag the layer with the declared content colorspace
+		// explicitly rather than relying on the implicit default. When the
+		// app self-manages the display transform it re-tags the layer with
+		// the display's own colorspace via `set_layer_color_management`,
+		// making ColorSync's mapping a pass-through (otherwise the OS would
+		// re-correct the already-corrected pixels — a double correction).
+		crate::display_colorspace::with_content_colorspace(
+			gpui::WindowContentColorspace::default(),
+			|space| unsafe {
 				let _: () = msg_send![&*layer, setColorspace: space];
-			});
-		}
+			},
+		);
 
 		Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+	}
+
+	/// Tag the window's Metal layer for who maps the pixels to the display.
+	///
+	/// `OsManaged` tags the layer with `content_colorspace` — the declaration
+	/// of what the pixels are, so ColorSync performs the one display mapping.
+	/// `SelfManaged` tags the layer with `display_id`'s colorspace (the
+	/// content declaration is then informational: the app already mapped the
+	/// pixels) so ColorSync passes them through; a display with no colorspace
+	/// (headless) leaves the current tag and logs, since a stale pass-through
+	/// tag would make the OS re-map the app's already-mapped pixels. No-op
+	/// for the headless renderer (no layer).
+	pub fn set_layer_color_management(
+		&self,
+		mode: gpui::LayerColorManagement,
+		display_id: u32,
+		content_colorspace: gpui::WindowContentColorspace,
+	) {
+		let Some(layer) = self.layer.as_ref() else {
+			return;
+		};
+		match mode {
+			gpui::LayerColorManagement::OsManaged => {
+				crate::display_colorspace::with_content_colorspace(content_colorspace, |space| {
+					unsafe {
+						let _: () = msg_send![&*layer, setColorspace: space];
+					}
+				});
+			}
+			gpui::LayerColorManagement::SelfManaged => {
+				let tagged =
+					crate::display_colorspace::with_display_colorspace(display_id, |space| unsafe {
+						let _: () = msg_send![&*layer, setColorspace: space];
+					});
+				if !tagged {
+					log::error!(
+						"display {display_id} has no colorspace; leaving the layer's previous \
+						 tag — ColorSync may re-map the app's already-mapped pixels"
+					);
+				}
+			}
+		}
 	}
 
 	/// Creates a new headless MetalRenderer for offscreen rendering without a window.
