@@ -141,6 +141,16 @@ pub trait ClipData {
 	fn is_enabled(&self) -> bool {
 		true
 	}
+
+	/// Whether the clip is a multi-cam clip (its texture chain contains a
+	/// multicam node consumers can switch angles on).
+	///
+	/// The widget renders such clips with a distinct multi-cam overlay
+	/// (accent border + corner badge) so the rows read as switchable;
+	/// defaults to `false` for data sources without the concept.
+	fn is_multicam(&self) -> bool {
+		false
+	}
 }
 
 /// A single track (row) of the timeline.

@@ -1201,6 +1201,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 							label: clip.label(),
 							color,
 							enabled: clip.is_enabled(),
+							multicam: clip.is_multicam(),
 							media_in: clip.media_in(),
 							in_transition,
 							out_transition,
@@ -1704,6 +1705,7 @@ impl<D: TimelineDataSource> Render for TimelineView<D> {
 								.selected(state.is_selected(clip.id))
 								.enabled(clip.enabled)
 								.locked(row_locked)
+								.multicam(clip.multicam)
 								.content(match kind {
 									TrackKind::Video => ClipContent::Thumbnails,
 									TrackKind::Audio => ClipContent::Waveform,
@@ -2145,6 +2147,7 @@ struct ClipRenderData {
 	label: SharedString,
 	color: Hsla,
 	enabled: bool,
+	multicam: bool,
 	media_in: Frame,
 	in_transition: Option<FrameRange>,
 	out_transition: Option<FrameRange>,

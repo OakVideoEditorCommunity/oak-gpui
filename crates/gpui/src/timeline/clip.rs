@@ -196,6 +196,7 @@ pub struct ClipElement {
 	selected: bool,
 	enabled: bool,
 	locked: bool,
+	multicam: bool,
 	in_transition: Option<FrameRange>,
 	out_transition: Option<FrameRange>,
 	content: ClipContent,
@@ -227,6 +228,7 @@ impl ClipElement {
 			selected: false,
 			enabled: true,
 			locked: false,
+			multicam: false,
 			in_transition,
 			out_transition,
 			content: ClipContent::None,
@@ -250,6 +252,12 @@ impl ClipElement {
 	/// drag cursor).
 	pub fn locked(mut self, locked: bool) -> Self {
 		self.locked = locked;
+		self
+	}
+
+	/// Builder: render as a multi-cam clip (accent border + corner badge).
+	pub fn multicam(mut self, multicam: bool) -> Self {
+		self.multicam = multicam;
 		self
 	}
 
@@ -282,6 +290,7 @@ struct ClipPaint {
 	selected: bool,
 	enabled: bool,
 	locked: bool,
+	multicam: bool,
 	in_transition: Option<FrameRange>,
 	out_transition: Option<FrameRange>,
 	content: ClipContent,
@@ -297,6 +306,7 @@ impl RenderOnce for ClipElement {
 			selected,
 			enabled,
 			locked,
+			multicam,
 			in_transition,
 			out_transition,
 			content,
@@ -318,6 +328,7 @@ impl RenderOnce for ClipElement {
 						selected,
 						enabled,
 						locked,
+						multicam,
 						in_transition,
 						out_transition,
 						content,
@@ -397,6 +408,33 @@ impl RenderOnce for ClipElement {
 								.expect("clip decorator lock is not poisoned")
 								.paint_waveform(window, paint.id, visible_range, bounds),
 							ClipContent::None => {}
+						}
+
+						// Multi-cam clip overlay: a warm accent border plus
+						// a corner "camera wedge" (muted-saturation gold,
+						// clearly distinct from the green clip bodies and
+						// the green selection outline).
+						if paint.multicam {
+							window.paint_quad(
+								outline(
+									bounds,
+									hsla(0.13, 0.9, 0.55, 1.0),
+									BorderStyle::Solid,
+								)
+								.corner_radii(CLIP_CORNER_RADIUS),
+							);
+							// Corner badge: a small triangle in the top-left
+							// corner, echoing a lens/record indicator.
+							let badge = px(10.0);
+							let mut path = PathBuilder::fill();
+							path.move_to(point(bounds.left(), bounds.top()));
+							path.line_to(point(bounds.left() + badge, bounds.top()));
+							path.line_to(point(bounds.left(), bounds.top() + badge));
+							path.close();
+							window.paint_path(
+								path.build().expect("multicam badge path is valid"),
+								hsla(0.13, 0.9, 0.42, 1.0),
+							);
 						}
 
 						// Selection outline on top of everything.
