@@ -358,16 +358,25 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
 					"Open File"
 				};
 
-				let request = match ashpd::desktop::file_chooser::OpenFileRequest::default()
+				let mut request = ashpd::desktop::file_chooser::OpenFileRequest::default()
 					.identifier(identifier.await)
 					.modal(true)
 					.title(title)
 					.accept_label(options.prompt.as_ref().map(gpui::SharedString::as_str))
 					.multiple(options.multiple)
-					.directory(options.directories)
-					.send()
-					.await
-				{
+					.directory(options.directories);
+				// Extension filter (the caller's allowed_extensions, e.g.
+				// ["ove","otio","fcpxml"] for the project import/export):
+				// the portal filter globs the accepted patterns.
+				if !options.allowed_extensions.is_empty() {
+					let mut filter =
+						ashpd::desktop::file_chooser::FileFilter::new("Supported files");
+					for ext in &options.allowed_extensions {
+						filter = filter.glob(&format!("*.{ext}"));
+					}
+					request = request.filter(filter);
+				}
+				let request = match request.send().await {
 					Ok(request) => request,
 					Err(err) => {
 						let result = match err {

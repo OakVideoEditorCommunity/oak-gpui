@@ -1845,6 +1845,9 @@ pub struct PathPromptOptions {
 	pub multiple: bool,
 	/// The prompt to show to a user when selecting a path
 	pub prompt: Option<SharedString>,
+	/// Restrict the choosable items to these lowercase extensions
+	/// (without the dot; empty = no restriction). Empty also means "any".
+	pub allowed_extensions: Vec<String>,
 }
 
 /// What kind of prompt styling to show
