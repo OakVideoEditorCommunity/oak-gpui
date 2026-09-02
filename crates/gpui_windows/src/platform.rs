@@ -1203,10 +1203,10 @@ fn file_open_dialog(
 			let name = windows::core::HSTRING::from("Supported files");
 			let pattern = windows::core::HSTRING::from(filter);
 			let spec = Common::COMDLG_FILTERSPEC {
-				pszName: name.as_ptr(),
-				pszSpec: pattern.as_ptr(),
+				pszName: windows::core::PCWSTR(name.as_ptr()),
+				pszSpec: windows::core::PCWSTR(pattern.as_ptr()),
 			};
-			folder_dialog.SetFileTypes(1, &spec)?;
+			folder_dialog.SetFileTypes(&[spec])?;
 			folder_dialog.SetDefaultExtension(
 				&HSTRING::from(options.allowed_extensions[0].as_str()),
 			)?;
