@@ -1188,6 +1188,30 @@ fn file_open_dialog(
 			folder_dialog.SetOkButtonLabel(&HSTRING::from(prompt))?;
 		}
 
+		// Extension filter (the host's allowed_extensions, e.g.
+		// .ove/.otio/.fcpxml for the project import): the common
+		// ComDlg filter spec.
+		if !options.allowed_extensions.is_empty() {
+			let filter = options
+				.allowed_extensions
+				.iter()
+				.map(|ext| format!("*.{ext}"))
+				.collect::<Vec<_>>()
+				.join(";");
+			// The HSTRINGs must outlive the call (the filter spec holds
+			// raw pointers into them).
+			let name = windows::core::HSTRING::from("Supported files");
+			let pattern = windows::core::HSTRING::from(filter);
+			let spec = Common::COMDLG_FILTERSPEC {
+				pszName: name.as_ptr(),
+				pszSpec: pattern.as_ptr(),
+			};
+			folder_dialog.SetFileTypes(1, &spec)?;
+			folder_dialog.SetDefaultExtension(
+				&HSTRING::from(options.allowed_extensions[0].as_str()),
+			)?;
+		}
+
 		if folder_dialog.Show(window).is_err() {
 			// User cancelled
 			return Ok(None);

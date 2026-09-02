@@ -13,7 +13,8 @@ use cocoa::{
 	},
 	base::{BOOL, NO, YES, id, nil, selector},
 	foundation::{
-		NSArray, NSAutoreleasePool, NSBundle, NSInteger, NSProcessInfo, NSString, NSUInteger, NSURL,
+		NSArray, NSAutoreleasePool, NSBundle, NSInteger, NSMutableArray, NSProcessInfo, NSString,
+		NSUInteger, NSURL,
 	},
 };
 use core_foundation::{
@@ -765,6 +766,20 @@ impl Platform for MacPlatform {
 
 					if let Some(prompt) = options.prompt {
 						let _: () = msg_send![panel, setPrompt: ns_string(&prompt)];
+					}
+
+					// Extension filter (the host's allowed_extensions): the
+					// open panel's allowedFileTypes. Empty = any.
+					if !options.allowed_extensions.is_empty() {
+						let ns_array = {
+							let arr = NSMutableArray::<NSString>::new();
+							for ext in &options.allowed_extensions {
+								let s = ns_string(ext.as_str());
+								arr.addObject(&*s);
+							}
+							arr
+						};
+						let _: () = msg_send![panel, setAllowedFileTypes: &*ns_array];
 					}
 
 					let _: () = msg_send![panel, beginWithCompletionHandler: block];
