@@ -292,14 +292,14 @@ impl MetalRenderer {
 			gpui::LayerColorManagement::OsManaged => {
 				crate::display_colorspace::with_content_colorspace(content_colorspace, |space| {
 					unsafe {
-						let _: () = msg_send![&*layer, setColorspace: space];
+						let _: () = msg_send![&**layer, setColorspace: space];
 					}
 				});
 			}
 			gpui::LayerColorManagement::SelfManaged => {
 				let tagged =
 					crate::display_colorspace::with_display_colorspace(display_id, |space| unsafe {
-						let _: () = msg_send![&*layer, setColorspace: space];
+						let _: () = msg_send![&**layer, setColorspace: space];
 					});
 				if !tagged {
 					log::error!(

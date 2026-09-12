@@ -39,6 +39,10 @@ use crate::{icons, tooltip::tooltip_view};
 /// straight into a 10-bit swapchain instead of going through the 8-bit
 /// sprite atlas.
 #[derive(Clone)]
+#[cfg_attr(
+	not(any(target_os = "linux", target_os = "freebsd")),
+	allow(dead_code)
+)]
 struct GpuFrameEntry {
 	/// The GPU texture, type-erased (an `Arc<wgpu::Texture>`).
 	texture: Arc<dyn std::any::Any + Send + Sync>,
