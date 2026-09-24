@@ -186,6 +186,14 @@ pub struct PanelHandle {
 	view: AnyView,
 	title: SharedString,
 	closable: bool,
+	/// Re-reads [`DockPanel::title`] into the cached snapshot. The handle is
+	/// type-erased at this point, so the refresh goes through a closure
+	/// captured from the concrete entity (used when the UI language
+	/// switches; the panels' titles are localized).
+	title_provider: Box<dyn Fn(&App) -> SharedString>,
+	/// Marks the panel view dirty so its localized content re-renders
+	/// (same language-switch path as `title_provider`).
+	notifier: Box<dyn Fn(&mut App)>,
 	/// Subscription to the panel's [`PanelEvent`]s while it is held by a
 	/// dock area, installed by [`DockArea`](crate::dock::DockArea) when the
 	/// panel is added.
@@ -206,11 +214,19 @@ impl PanelHandle {
 		let id = panel.read(cx).panel_id();
 		let title = panel.read(cx).title(cx);
 		let closable = panel.read(cx).closable();
+		let title_panel = panel.clone();
+		let title_provider = Box::new(move |cx: &App| title_panel.read(cx).title(cx));
+		let notify_panel = panel.clone();
+		let notifier = Box::new(move |cx: &mut App| {
+			notify_panel.update(cx, |_panel, cx| cx.notify());
+		});
 		Self {
 			id,
 			view: panel.into(),
 			title,
 			closable,
+			title_provider,
+			notifier,
 			subscription: None,
 		}
 	}
@@ -226,6 +242,18 @@ impl PanelHandle {
 	/// [`PanelEvent::TitleChanged`]; treat as display-only.
 	pub fn title(&self) -> &SharedString {
 		&self.title
+	}
+
+	/// Re-reads [`DockPanel::title`] from the panel view into the cached
+	/// snapshot. Used by [`DockArea::refresh_panel_titles`](crate::dock::DockArea::refresh_panel_titles)
+	/// when the UI language switches (the titles are localized).
+	pub(crate) fn refresh_title(&mut self, cx: &App) {
+		self.title = (self.title_provider)(cx);
+	}
+
+	/// Marks the panel view dirty so its localized content re-renders.
+	pub(crate) fn notify_panel(&self, cx: &mut App) {
+		(self.notifier)(cx);
 	}
 
 	/// Returns the cached value of [`DockPanel::closable`].

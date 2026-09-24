@@ -278,6 +278,21 @@ impl DockArea {
 		self.panels.get(&id)
 	}
 
+	/// Re-reads every held panel's (localized) title into its cached
+	/// snapshot, marks each panel view dirty so its content re-renders, and
+	/// repaints the dock chrome.
+	///
+	/// Call this after switching the UI language: [`DockPanel::title`] and
+	/// the panel bodies are localized, but the tab strip reads the cached
+	/// snapshot and the panels only re-render when notified.
+	pub fn refresh_panel_titles(&mut self, cx: &mut Context<Self>) {
+		for handle in self.panels.values_mut() {
+			handle.refresh_title(cx);
+			handle.notify_panel(cx);
+		}
+		cx.notify();
+	}
+
 	/// Captures a serializable snapshot of the current layout.
 	///
 	/// Requires a registry (see [`with_registry`](DockArea::with_registry));
@@ -1407,6 +1422,9 @@ mod tests {
 	/// Root view hosting the dock area, so tests can reach the dock entity.
 	struct DockHost {
 		dock: Entity<DockArea>,
+		/// The first panel, when the test needs to mutate its title behind
+		/// the dock's cached snapshot (the language-refresh test).
+		panel: Option<Entity<TestPanel>>,
 	}
 
 	impl Render for DockHost {
@@ -1454,7 +1472,7 @@ mod tests {
 					);
 				});
 			}
-			DockHost { dock }
+			DockHost { dock, panel: None }
 		})
 	}
 
@@ -1539,6 +1557,48 @@ mod tests {
 				.split_ratios(&NodePath::default())
 				.expect("root is a split")
 		})
+	}
+
+	/// A UI language switch re-reads the panels' localized titles into the
+	/// dock's cached snapshots (the tab strip renders those, and the panels
+	/// are only re-rendered when notified).
+	#[test]
+	fn refresh_panel_titles_rereads_the_localized_titles() {
+		let mut test_app = TestAppContext::single();
+		test_app.update(|cx| cx.init_colors());
+		let window = test_app.open_window(size(px(800.), px(600.)), |_window, cx| {
+			let dock = cx.new(|cx| DockArea::new(cx));
+			let panel = cx.new(|_| TestPanel::new(1, "Project"));
+			let handle = PanelHandle::new(panel.clone(), cx);
+			dock.update(cx, |dock, cx| dock.add_panel(handle, None, cx));
+			DockHost {
+				dock,
+				panel: Some(panel),
+			}
+		});
+		let view: Entity<DockHost> = window.root(&mut test_app).unwrap();
+		let (dock, panel) = test_app.read(|app| {
+			let host = view.read(app);
+			(host.dock.clone(), host.panel.clone().expect("the test panel"))
+		});
+
+		// Registration snapshotted the title.
+		let cached = |app: &App| {
+			dock.read(app)
+				.panel(PanelId::new(1))
+				.expect("panel 1")
+				.title()
+				.clone()
+		};
+		assert_eq!(test_app.read(|app| cached(app)), SharedString::from("Project"));
+
+		// The title changes (as a language switch would) behind the handle;
+		// the refresh re-reads it.
+		test_app.update(|app| {
+			panel.update(app, |panel, _cx| panel.title = "项目".into());
+			dock.update(app, |dock, cx| dock.refresh_panel_titles(cx));
+		});
+		assert_eq!(test_app.read(|app| cached(app)), SharedString::from("项目"));
 	}
 
 	/// Dragging a split's divider moves the boundary with the pointer: the

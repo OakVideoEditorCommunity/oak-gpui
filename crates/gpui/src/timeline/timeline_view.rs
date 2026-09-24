@@ -2429,6 +2429,7 @@ mod tests {
 			label: "clip".into(),
 			color: hsla(0.4, 0.5, 0.5, 1.0),
 			enabled: true,
+			multicam: false,
 			media_in: Frame::ZERO,
 			in_transition: None,
 			out_transition: None,
